@@ -258,7 +258,11 @@ boundary, and so does one whose admission cannot also hold the extra block (a
 cache with no spare block): the next chunk's admission publishes its live slot
 there, at the cost of one more round. Multi-turn traffic whose next turn
 re-renders the end of the previous prompt then reuses the common prefix
-immediately.
+immediately. The request lets the block go at its next publication point
+but keeps the boundary (`CacheProgress::published_state_checkpoint_tokens`):
+the next turn reads that checkpoint, so the request's final publication
+refreshes its Host copy as part of the boundary it leaves, dated with its
+page (`cache-concepts.md`, two tiers).
 
 **A finish settles when its last forward has landed.** `forward::Finish`
 (and the P role's `pd::SucceededEvent`) moves a page-holding request to
@@ -604,10 +608,10 @@ pin. Nothing else needs to know the copy is in flight, so the runtime copies
 on its own stream and no forward waits. A cached block is never written again
 by its owner (prefix reuse already depends on that), so the pin alone makes
 the copy race-free. Both guards share one ticket
-(`StartPendingStores(guard, tables, num_tokens)` drains the publication queue,
-a finish's boundary from its tables first; `StartRetractionStores` builds the
-image's L2 leg from the victim's tables), and the op carries `source_pinned`
-to the runtime, which branches on the guard and never on the reason.
+(`StartPendingStores(guard, publication)` drains the publication queue, a
+finish's boundary first; `StartRetractionStores` builds the image's L2 leg
+from the victim's tables), and the op carries `source_pinned` to the
+runtime, which branches on the guard and never on the reason.
 
 **Per-victim quiescence, not global.** A request whose own forward is still
 out must not be retracted — its result would land on pages it no longer owns,

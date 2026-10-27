@@ -48,14 +48,14 @@ public:
     // gets the same guard. Boundary publication and finish drain with
     // kPinnedUntilAck; a retraction's stream-ordered L2 leg does not use the
     // queue -- StartRetractionStores builds it from the victim's tables.
-    // A finish passes its tables and computed frontier, empty for a live
-    // request's publications and a finish that computed nothing: the
-    // boundary it leaves is stored ahead of the queued candidates, and its
-    // Host copies -- already cached, carried by a store in flight, or stored
-    // now -- are dated by the batch's epochs
-    // (CacheCoordinator::TakeStoreEpochs); no other Host entry is refreshed.
-    std::optional<WriteBackOperation> StartPendingStores(StoreSourceGuard guard, std::span<const BlockTable> tables,
-                                                         std::int32_t num_tokens);
+    // A finish passes its final publication, nullopt for a live request's
+    // publications and a finish that computed nothing: the boundary it
+    // leaves is stored ahead of the queued candidates, and its Host copies
+    // -- already cached, carried by a store in flight, or stored now -- are
+    // dated by the batch's epochs (CacheCoordinator::TakeStoreEpochs); no
+    // other Host entry is refreshed.
+    std::optional<WriteBackOperation> StartPendingStores(
+        StoreSourceGuard guard, const std::optional<CacheCoordinator::FinalPublication>& publication);
     LoadBackOperation StartPrefixLoad(std::vector<BlockTransfer> block_transfers);
 
     // A retraction image and the two store ops that fill it. The L2 leg is a
@@ -72,20 +72,21 @@ public:
         SnapshotStoreOperation snapshot_store;
         std::vector<std::uint32_t> pending_store_ops;
     };
-    // Takes the image of a quiescent victim's tables ([0, num_tokens) are its
-    // computed tokens) and starts both store legs. nullopt when the image
-    // cannot be held: a published slot whose Host L2 block cannot be acquired
-    // (after evicting unpinned entries) falls back to the snapshot pool, and
-    // the retraction is refused only when the pool cannot hold tail plus
-    // fallback -- then nothing is kept, though unpinned Host entries evicted
-    // for the attempt stay evicted and the refreshed ones stay refreshed.
+    // Takes the image of a quiescent victim's tables at its final publication
+    // ([0, num_tokens) are its computed tokens) and starts both store legs.
+    // nullopt when the image cannot be held: a published slot whose Host L2
+    // block cannot be acquired (after evicting unpinned entries) falls back
+    // to the snapshot pool, and the retraction is refused only when the pool
+    // cannot hold tail plus fallback -- then nothing is kept, though unpinned
+    // Host entries evicted for the attempt stay evicted and the refreshed
+    // ones stay refreshed.
     // blob_slot is the slot-state blob's arena slot the tail leg exports into;
     // the store shares it with the Retracted state so an abort before the ACK
     // cannot hand the slot to a new victim while the export still writes it.
     std::optional<RetractionStores> StartRetractionStores(const std::string& request_id,
                                                           std::int32_t request_pool_index,
                                                           std::shared_ptr<SnapshotSlotIndex> blob_slot,
-                                                          std::span<const BlockTable> tables, std::int32_t num_tokens);
+                                                          const CacheCoordinator::FinalPublication& publication);
     // One restore op for both legs: load_pairs are the Host L2 rows (keyed),
     // snapshot_pairs the snapshot-pool rows. Both ends of every pair, the blob
     // slot (shared) and the request-pool row the blob is imported into

@@ -67,6 +67,13 @@ struct CacheProgress {
     // index keeps them cached. A retraction drops them once its publication
     // is applied (a Retracted request holds no Device block).
     std::vector<CacheBlockRef> published_state_checkpoint_blocks;
+    // The boundary of the in-forward State checkpoint the request has
+    // published -- from its block, or from the live slot of a chunk that
+    // ended there -- zero without one. Kept after the blocks are let go: a
+    // next turn that re-renders the end of the prompt resumes there, so the
+    // request's final publication refreshes it on Host with the boundary it
+    // leaves.
+    std::int32_t published_state_checkpoint_tokens{0};
 };
 
 inline std::vector<std::int32_t> ComputeShiftedInputIds(const TokenContainer* token_container,

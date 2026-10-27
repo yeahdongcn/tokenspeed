@@ -187,6 +187,7 @@ RequestProgress AdvanceRequestProgress(const Request& request, fsm::CacheProgres
         _assert(cache_progress.state_checkpoint_tokens % prefix_granularity == 0,
                 "an in-forward State checkpoint sits at a page boundary");
         state_checkpoint_pages = cache_progress.state_checkpoint_tokens / prefix_granularity;
+        cache_progress.published_state_checkpoint_tokens = cache_progress.state_checkpoint_tokens;
         cache_progress.published_state_checkpoint_blocks = std::move(cache_progress.state_checkpoint_blocks);
         cache_progress.state_checkpoint_blocks.clear();
         cache_progress.state_checkpoint_tokens = 0;
@@ -564,6 +565,9 @@ std::optional<fsm::SchedulePrefillEvent> Scheduler::schedulePrefill(
     if (first_pos >= cache_progress.junction_tokens) {
         cache_progress.junction_tokens = 0;
     }
+    if (ends_at_state_checkpoint) {
+        cache_progress.published_state_checkpoint_tokens = state_checkpoint;
+    }
     const RequestProgress progress = AdvanceRequestProgress(
         *request, cache_progress, request->NumComputedTokens(), coordinator_.PrefixGranularity(),
         config_.StreamsDeviceCacheToHost(),
@@ -879,7 +883,6 @@ std::optional<Scheduler::ImageShortfall> Scheduler::retractVictim(
         return ImageShortfall::kBlobSlot;
     }
     publishCompletedPrefix(victim);
-    const std::int32_t num_computed_tokens = victim.NumComputedTokens();
     refreshResumeBoundary(victim, victim.CacheProgressRef());
 
     // The blob slot is shared with the store that exports into it (and later
@@ -887,7 +890,7 @@ std::optional<Scheduler::ImageShortfall> Scheduler::retractVictim(
     // the slot with the op until the copy is done.
     auto blob_slot = std::make_shared<SnapshotSlotIndex>(snapshot_slots_.Allocate());
     std::optional<TierTransferManager::RetractionStores> stores = tier_transfers_.StartRetractionStores(
-        victim.Id(), victim.RequestPoolIndex(), blob_slot, victim.BlockTablesRef(), num_computed_tokens);
+        victim.Id(), victim.RequestPoolIndex(), blob_slot, finalPublication(victim, victim.CacheProgressRef()));
     if (!stores) {
         return ImageShortfall::kSnapshotPool;  // the publication stands; the victim keeps running
     }

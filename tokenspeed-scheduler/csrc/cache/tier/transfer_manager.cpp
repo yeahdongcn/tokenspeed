@@ -31,16 +31,15 @@
 
 namespace tokenspeed {
 
-std::optional<WriteBackOperation> TierTransferManager::StartPendingStores(StoreSourceGuard guard,
-                                                                          std::span<const BlockTable> tables,
-                                                                          std::int32_t num_tokens) {
+std::optional<WriteBackOperation> TierTransferManager::StartPendingStores(
+    StoreSourceGuard guard, const std::optional<CacheCoordinator::FinalPublication>& publication) {
     std::vector<CacheCoordinator::StoreCandidate> candidates = coordinator_.TakePendingStores();
-    if (candidates.empty() && tables.empty()) {
+    if (candidates.empty() && !publication) {
         return std::nullopt;
     }
     // The boundary's Host copies are refreshed first, so the allocation below
     // does not take them as victims.
-    CacheCoordinator::StoreEpochs epochs = coordinator_.TakeStoreEpochs(tables, num_tokens);
+    CacheCoordinator::StoreEpochs epochs = coordinator_.TakeStoreEpochs(publication);
     std::vector<CacheKey> keys;
     std::vector<CacheBlockRef> device_block_refs;
     std::vector<std::uint32_t> group_ids;
@@ -220,8 +219,10 @@ void TierTransferManager::redateInFlight(const BoundaryEpochs& boundary) {
 
 std::optional<TierTransferManager::RetractionStores> TierTransferManager::StartRetractionStores(
     const std::string& request_id, std::int32_t request_pool_index, std::shared_ptr<SnapshotSlotIndex> blob_slot,
-    std::span<const BlockTable> tables, std::int32_t num_tokens) {
+    const CacheCoordinator::FinalPublication& publication) {
     _assert(blob_slot != nullptr && blob_slot->valid(), "a retraction image needs its blob slot");
+    const std::span<const BlockTable> tables = publication.tables;
+    const std::int32_t num_tokens = publication.num_tokens;
     const std::int32_t num_groups = coordinator_.NumGroups();
     std::vector<std::vector<ImageSlot>> published = coordinator_.PublishedDataSlots(tables, num_tokens);
     std::vector<std::vector<ImageSlot>> host_slots(static_cast<std::size_t>(num_groups));
@@ -251,7 +252,7 @@ std::optional<TierTransferManager::RetractionStores> TierTransferManager::StartR
         // what the retraction publishes is refreshed like a finish's
         // boundary, so it is as recent as the retraction once the image lets
         // go.
-        epochs = coordinator_.TakeStoreEpochs(tables, num_tokens);
+        epochs = coordinator_.TakeStoreEpochs(publication);
         for (const CacheCoordinator::StoreEpochs::Uncached& block : epochs.uncached) {
             boundary.emplace(block.key, block.access_epoch);
         }
