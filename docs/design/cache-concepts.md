@@ -862,8 +862,9 @@ Its responsibilities:
   the request used, raising epochs and never lowering them. The boundary it
   leaves (`CacheCoordinator::TakeStoreEpochs` with its
   `FinalPublication`: every History block it holds below its frontier, the
-  pages its forwards read to the end, Device hits included; each State
-  group's checkpoint at the frontier; and the in-forward checkpoint it
+  pages its forwards read to the end, Device hits included and a page held
+  as a restore's private copy counted through the page's Device entry; each
+  State group's checkpoint at the frontier; and the in-forward checkpoint it
   published, with a sliding window's blocks behind it, where a next turn
   that re-renders the end of the prompt resumes) takes one epoch per prefix
   page, the first page newest, so a prefix leaves Host from its end and
@@ -874,11 +875,11 @@ Its responsibilities:
   tail or a sliding window's lookback), is dated at that admission, behind
   everything the publication leaves, so a new turn's checkpoint outlives the
   one it resumed from. Other checkpoints under its pages keep their epochs.
-  A store batch takes its epochs when it starts: a boundary copy already on
-  Host is refreshed at once, before the batch picks its victims; one an
-  earlier store still carries is published at the newer epoch at that
-  store's ACK, and no ACK dates back an entry the index already holds (an L3
-  read that landed first). The batch dates what else it stores
+  A store batch takes its epochs when it starts, and both boundaries are
+  refreshed then: a copy already on Host at once, before the batch picks its
+  victims; one an earlier store still carries in flight, so that store's ACK
+  publishes it no older; and no ACK dates back an entry the index already
+  holds (an L3 read that landed first). The batch dates what else it stores
   `base`, older than its boundary, except that a final publication's copy of
   an entry outside its boundary keeps that Device entry's date. Pinned
   entries, partially pinned foreign parents,
@@ -902,8 +903,7 @@ Its responsibilities:
   request published (pages, tail, state slot 1) is queued before request
   ownership is released. The store takes the boundary first; the queue
   supplies the other published entries under the request's pages: a State
-  group's earlier checkpoints, a sliding window's earlier pages, a page a
-  restore rebuilt as a private copy.
+  group's earlier checkpoints, a sliding window's earlier pages.
   Ordinary sliding-window entries always stream when published. The queue is
   drained by
   `TierTransferManager::StartPendingStores(guard, publication)`, and
