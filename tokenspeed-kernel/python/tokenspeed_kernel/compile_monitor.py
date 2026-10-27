@@ -314,13 +314,27 @@ def _call_site() -> str:
     return f"{os.sep.join(path[-3:])}:{frame.f_lineno} ({frame.f_code.co_name})"
 
 
+def _hook_namespace() -> Any | None:
+    """The namespace holding Triton's JIT hooks, or ``None`` if it has none.
+
+    The hooks live on ``triton.knobs.runtime`` from Triton 3.3. Older builds
+    have no equivalent -- Moore Threads' 3.2 and the NPU Triton among them --
+    so the monitor is unavailable there rather than broken.
+    """
+    runtime = getattr(getattr(triton, "knobs", None), "runtime", None)
+    if runtime is None or not hasattr(runtime, "jit_cache_hook"):
+        return None
+    return runtime
+
+
 class _Hooks:
     """Triton's pre- and post-compile hooks, chained onto earlier ones."""
 
-    def __init__(self, monitor: CompileMonitor) -> None:
+    def __init__(self, monitor: CompileMonitor, namespace: Any) -> None:
         self.monitor = monitor
-        self.previous_cache_hook = triton.knobs.runtime.jit_cache_hook
-        self.previous_post_compile_hook = triton.knobs.runtime.jit_post_compile_hook
+        self.namespace = namespace
+        self.previous_cache_hook = namespace.jit_cache_hook
+        self.previous_post_compile_hook = namespace.jit_post_compile_hook
         self._started: dict[tuple[int, int, str], float] = {}
 
     def _timer_key(self, fn: Any, key: str) -> tuple[int, int, str]:
@@ -361,17 +375,18 @@ def install_compile_monitor(on_unbounded: OnUnbounded) -> None:
         on_unbounded: ``"warn"`` or ``"error"``; see :class:`CompileMonitor`.
 
     Chains onto hooks installed earlier. Installing again replaces the
-    monitor, which resets its history. A no-op on NPU, whose Triton has no
-    JIT hooks.
+    monitor, which resets its history. A no-op where the Triton build has no
+    JIT hooks: the NPU Triton, and any build older than Triton 3.3.
     """
     global _hooks
-    if _IS_NPU:
-        logger.info("Triton compile monitor is not available on NPU")
+    namespace = None if _IS_NPU else _hook_namespace()
+    if namespace is None:
+        logger.info("Triton compile monitor is not available on this Triton build")
         return
     uninstall_compile_monitor()
-    _hooks = _Hooks(CompileMonitor(on_unbounded, UNBOUNDED_VALUE_LIMIT))
-    triton.knobs.runtime.jit_cache_hook = _hooks.cache_hook
-    triton.knobs.runtime.jit_post_compile_hook = _hooks.post_compile_hook
+    _hooks = _Hooks(CompileMonitor(on_unbounded, UNBOUNDED_VALUE_LIMIT), namespace)
+    namespace.jit_cache_hook = _hooks.cache_hook
+    namespace.jit_post_compile_hook = _hooks.post_compile_hook
 
 
 def uninstall_compile_monitor() -> None:
@@ -379,8 +394,8 @@ def uninstall_compile_monitor() -> None:
     global _hooks
     if _hooks is None:
         return
-    triton.knobs.runtime.jit_cache_hook = _hooks.previous_cache_hook
-    triton.knobs.runtime.jit_post_compile_hook = _hooks.previous_post_compile_hook
+    _hooks.namespace.jit_cache_hook = _hooks.previous_cache_hook
+    _hooks.namespace.jit_post_compile_hook = _hooks.previous_post_compile_hook
     _hooks = None
 
 

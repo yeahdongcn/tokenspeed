@@ -1,0 +1,8 @@
+packaging
+wheel
+psutil
+numpy
+# The MUSA torch build (torch_musa) and Moore Threads' Triton build come from
+# the MUSA runtime image or from the vendor channel. Do not pin either here:
+# `torch` resolves to the upstream CUDA wheel and `triton` to the upstream
+# CUDA/ROCm release, and installing either replaces the working MUSA stack.

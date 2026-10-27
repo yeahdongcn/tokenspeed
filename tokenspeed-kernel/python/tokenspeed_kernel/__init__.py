@@ -18,6 +18,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from tokenspeed_kernel._accel import activate_musa_shims as _activate_musa_shims
+
+_activate_musa_shims()
+
 from tokenspeed_kernel.profiling import (
     bootstrap_profiling_from_env as _bootstrap_profiling_from_env,
 )

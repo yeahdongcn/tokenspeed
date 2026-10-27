@@ -306,7 +306,7 @@ class BenchmarkRunner:
             )
 
         platform = current_platform()
-        if not spec.capability.satisfied_by(platform):
+        if not spec.capability.satisfied_by(platform, solution=spec.solution):
             raise ValueError(
                 f"Kernel {kernel_name!r} is not compatible with platform {platform.device_name}"
             )

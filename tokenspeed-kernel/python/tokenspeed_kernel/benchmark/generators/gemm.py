@@ -190,7 +190,7 @@ def _validate_exact_registration(
             f"Registration {spec.name!r} belongs to {spec.family}.{spec.mode}, "
             f"not {request.family}.{request.mode}",
         )
-    if not spec.capability.satisfied_by(platform):
+    if not spec.capability.satisfied_by(platform, solution=spec.solution):
         raise BenchmarkCaseError(
             BenchmarkStatus.NOT_APPLICABLE,
             f"Registration {spec.name!r} does not support {platform.device_name}",

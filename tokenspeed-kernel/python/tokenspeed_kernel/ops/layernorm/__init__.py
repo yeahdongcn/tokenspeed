@@ -57,10 +57,15 @@ from tokenspeed_kernel.signature import dense_tensor_format, format_signature
 
 _platform = current_platform()
 
+# Whether the portable Triton implementation is the only one this platform has.
+# Every non-NVIDIA vendor reaches RMSNorm through it; FlashInfer's fused
+# variants exist only for CUDA and Ascend supplies its own.
+_portable_rmsnorm = not _platform.is_nvidia and not _platform.is_npu
+
 if _platform.is_npu:
     from tokenspeed_kernel.ops.layernorm.ascend import qk_rmsnorm as _qk_rmsnorm
     from tokenspeed_kernel.ops.layernorm.ascend import rmsnorm as _rmsnorm
-elif _platform.is_amd:
+elif _portable_rmsnorm:
     from tokenspeed_kernel.ops.layernorm.triton import qk_rmsnorm as _qk_rmsnorm
     from tokenspeed_kernel.ops.layernorm.triton import rmsnorm as triton_rmsnorm
 else:
@@ -79,7 +84,7 @@ def rmsnorm(
     out: torch.Tensor | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Apply RMSNorm with one platform-independent call contract."""
-    if _platform.is_amd:
+    if _portable_rmsnorm:
         if residual is not None:
             if out is not None:
                 raise ValueError("fused add rmsnorm does not support out")

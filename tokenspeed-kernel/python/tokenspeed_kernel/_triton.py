@@ -32,6 +32,37 @@ from functools import partial
 import torch
 
 _IS_NPU = hasattr(torch, "npu") and torch.npu.is_available()
+_IS_MUSA = hasattr(torch, "musa") and torch.musa.is_available()
+
+
+class _UnavailableGluonKernel:
+    def __init__(self, fn, options, vendor):
+        self.fn = fn
+        self.options = options
+        self.vendor = vendor
+
+    def __getitem__(self, grid):
+        raise RuntimeError(
+            f"Gluon kernel {self.fn.__name__} cannot execute on {self.vendor}"
+        )
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError(
+            f"Gluon kernel {self.fn.__name__} cannot execute on {self.vendor}"
+        )
+
+
+class _UnavailableGluon:
+    """Import-only decorators; capability selection must exclude this vendor."""
+
+    def __init__(self, vendor):
+        self.vendor = vendor
+
+    def jit(self, fn=None, **options):
+        if fn is None:
+            return partial(_UnavailableGluonKernel, options=options, vendor=self.vendor)
+        return _UnavailableGluonKernel(fn, options, self.vendor)
+
 
 if _IS_NPU:
     from tokenspeed_kernel_npu._triton import libdevice, proton, tl, triton
@@ -41,32 +72,32 @@ if _IS_NPU:
     aggregate = None
     TensorDescriptor = None
     gl = None
+    gluon = _UnavailableGluon("Ascend")
+elif _IS_MUSA:
+    # Moore Threads ships its own Triton build, so the vendor release package
+    # this module indirection exists for is ``triton`` itself. Gluon and the
+    # host-side tensor descriptors are CUDA/ROCm features of the vendored
+    # release; registration imports must stay importable when MUSA Triton does
+    # not provide them, and capability selection excludes those kernels.
+    import triton
+    from triton import language as tl
+    from triton.language.extra import libdevice
 
-    class _UnavailableGluonKernel:
-        def __init__(self, fn, options):
-            self.fn = fn
-            self.options = options
+    try:
+        import triton.experimental.gluon.language as gl
+        from triton.experimental import gluon
+        from triton.language.core import _aggregate as aggregate
+        from triton.tools.tensor_descriptor import TensorDescriptor
+    except ImportError:
+        aggregate = None
+        TensorDescriptor = None
+        gl = None
+        gluon = _UnavailableGluon("MUSA")
 
-        def __getitem__(self, grid):
-            raise RuntimeError(
-                f"Gluon kernel {self.fn.__name__} cannot execute on Ascend"
-            )
-
-        def __call__(self, *args, **kwargs):
-            raise RuntimeError(
-                f"Gluon kernel {self.fn.__name__} cannot execute on Ascend"
-            )
-
-    class _UnavailableGluon:
-        """Import-only decorators; capability selection must exclude Ascend."""
-
-        @staticmethod
-        def jit(fn=None, **options):
-            if fn is None:
-                return partial(_UnavailableGluonKernel, options=options)
-            return _UnavailableGluonKernel(fn, options)
-
-    gluon = _UnavailableGluon()
+    try:
+        import triton.profiler as proton
+    except ImportError:
+        proton = None
 else:
     import tokenspeed_triton as triton
     import tokenspeed_triton.experimental.gluon.language as gl
@@ -160,7 +191,9 @@ def redirect_triton_to_tokenspeed_triton():
     Outside the ``with`` block ``sys.modules`` is restored to its prior
     state, so unrelated code is unaffected.
     """
-    if _IS_NPU:
+    # Ascend and MUSA bind no separate vendor package: ``triton`` already is
+    # the vendor build there, so there is nothing to redirect.
+    if _IS_NPU or _IS_MUSA:
         yield
         return
 

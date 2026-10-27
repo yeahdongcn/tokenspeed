@@ -99,7 +99,7 @@ def _select(
     spec = KernelRegistry.get().get_by_name(kernel.name)
     if not (
         (spec.family, spec.mode) == ("attention", mode)
-        and spec.capability.satisfied_by(current_platform())
+        and spec.capability.satisfied_by(current_platform(), solution=spec.solution)
         and spec_matches_traits(spec, dict(traits))
         and spec_matches_shape_traits(spec, dict(traits))
     ):

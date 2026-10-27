@@ -94,6 +94,25 @@ def _npu_is_available() -> bool:
     return bool(torch.npu.is_available())
 
 
+_MUSA_VENDOR = "musa"
+
+# Kernel source dialects a MUSA build executes as they are.
+#
+# Portable kernels are plain Triton over the shared ``tl`` surface, which is
+# what Moore Threads' Triton build compiles, the reference kernels are plain
+# PyTorch, and the composite ones only chain other registered ops. Vendor
+# compilers (CuTe DSL, Gluon, FlashInfer, TRT-LLM) have no MUSA equivalent, so
+# their solutions stay out of this set.
+_MUSA_KERNEL_SOLUTIONS = frozenset({"triton", "torch", "composite"})
+
+
+def _musa_is_available() -> bool:
+    """Return whether torch_musa is installed and a MUSA device is visible."""
+    if not hasattr(torch, "musa"):
+        return False
+    return bool(torch.musa.is_available())
+
+
 # ---------------------------------------------------------------------------
 # Core data structures
 # ---------------------------------------------------------------------------
@@ -136,7 +155,7 @@ class InterconnectInfo:
 class PlatformInfo:
     """Complete description of a compute platform."""
 
-    vendor: str  # "nvidia", "amd", "ascend"
+    vendor: str  # "nvidia", "amd", "ascend", "musa"
     arch_version: ArchVersion
     device_name: str
     device_count: int
@@ -159,6 +178,22 @@ class PlatformInfo:
 
     # NUMA-local CPU IDs per logical device. Empty means unavailable.
     numa_cpu_affinity: tuple[tuple[int, ...], ...] = ()
+
+    # Kernel source dialects this platform executes, or None for no restriction.
+    #
+    # A registration names the solution it is written in (``"triton"``,
+    # ``"cuda"``, ``"cute_dsl"``, ``"gluon"``, ``"flashinfer"``, ``"torch"``,
+    # ...). The solution, not the vendor, says what the kernel *is*: the same
+    # Triton source runs on any platform whose Triton build accepts the shared
+    # ``tl`` surface, while a CuTe DSL or Gluon kernel needs that vendor's
+    # compiler. A platform that lists its dialects rejects a registration
+    # written in one it cannot execute, which keeps vendor-only kernels out of
+    # selection even when a registration states no vendor or capability at all.
+    # It also lets a registration written before the platform existed stay
+    # selectable on it. This classifies the source: the launcher around the
+    # kernel is ordinary Python and must report a driver service the platform
+    # lacks instead of assuming one. None means no such restriction.
+    kernel_solutions: frozenset[str] | None = None
 
     @classmethod
     def detect(cls) -> PlatformInfo:
@@ -189,6 +224,10 @@ class PlatformInfo:
     @property
     def is_npu(self) -> bool:
         return self.vendor == "ascend"
+
+    @property
+    def is_musa(self) -> bool:
+        return self.vendor == "musa"
 
     @property
     def is_cdna4(self) -> bool:
@@ -319,10 +358,64 @@ class CapabilityRequirement:
             return self.vendor_min_arch_versions.get(vendor)
         return self.min_arch_version
 
-    def satisfied_by(self, platform: PlatformInfo) -> bool:
-        """Check if platform satisfies these requirements."""
-        if self.vendors and platform.vendor not in self.vendors:
+    def _matches_across_vendors(
+        self, platform: PlatformInfo, solution: str | None
+    ) -> bool:
+        """Whether a registration in ``solution`` runs here despite its vendor.
+
+        Only a registration that makes no architecture claim can cross the
+        vendor gate. An arch floor or ceiling is stated on the scale of the
+        vendor the kernel was written for, so it cannot be evaluated on another
+        vendor's numbering: applying it would silently admit or reject the
+        kernel for the wrong reason. Such a registration stays vendor-gated
+        until someone registers the same source for this platform or states its
+        floor here.
+
+        This classifies the kernel *source*, and says nothing about the Python
+        launcher around it. A launcher that asks the driver for a service this
+        vendor does not implement -- occupancy, programmatic dependent launch --
+        must fail with a named error rather than pick a wrong default; see
+        :func:`max_active_ctas`. Admission means the source compiles here;
+        whether the kernel is correct is established by running it.
+        """
+        if solution is None:
             return False
+        if (
+            platform.kernel_solutions is None
+            or solution not in platform.kernel_solutions
+        ):
+            return False
+        return (
+            self.min_arch_version is None
+            and self.max_arch_version is None
+            and not self.vendor_min_arch_versions
+        )
+
+    def satisfied_by(
+        self, platform: PlatformInfo, *, solution: str | None = None
+    ) -> bool:
+        """Check if platform satisfies these requirements.
+
+        Args:
+            platform: The platform to check against.
+            solution: The kernel source dialect the registration is written in.
+                A platform that executes that dialect (see
+                :attr:`PlatformInfo.kernel_solutions`) accepts the registration
+                even when it was gated on another vendor, as long as the
+                registration claims no architecture support. That covers the
+                kernel source only; :meth:`_matches_across_vendors` states what
+                it leaves to the launcher.
+        """
+        if (
+            platform.kernel_solutions is not None
+            and solution
+            and solution not in platform.kernel_solutions
+        ):
+            return False
+
+        if self.vendors and platform.vendor not in self.vendors:
+            if not self._matches_across_vendors(platform, solution):
+                return False
 
         min_arch_version = self.min_arch_version_for(platform.vendor)
         if min_arch_version:
@@ -406,7 +499,14 @@ def max_active_ctas(kernel) -> int:
         library = ctypes.CDLL(get_hip_runtime_path())
         query = library.hipModuleOccupancyMaxActiveBlocksPerMultiprocessor
     else:
-        raise ValueError(f"Unsupported occupancy backend: {backend}")
+        # Reached by a portable-Triton kernel whose launcher sizes its grid
+        # from residency on a vendor this helper does not query. Say which
+        # vendor and what to do; a wrong guess here would mis-size the grid.
+        raise ValueError(
+            f"occupancy is not implemented for the {backend!r} Triton backend; "
+            "size the grid from a constant or implement the query for this "
+            "vendor"
+        )
     query.argtypes = [
         ctypes.POINTER(ctypes.c_int),
         ctypes.c_void_p,
@@ -451,8 +551,15 @@ def _detect_platform() -> PlatformInfo:
         import torch
     except ImportError:
         raise RuntimeError(
-            "tokenspeed-kernel requires PyTorch with NVIDIA CUDA or AMD ROCm support."
+            "tokenspeed-kernel requires PyTorch with NVIDIA CUDA, AMD ROCm, "
+            "Moore Threads MUSA, or Ascend NPU support."
         ) from None
+
+    # MUSA is checked before ``torch.cuda.is_available()``: torchada leaves that
+    # False on MUSA by design, but a project that forces it True would otherwise
+    # detect MUSA hardware through the CUDA path and mislabel its arch.
+    if _musa_is_available():
+        return _detect_musa_platform()
 
     if torch.cuda.is_available():
         if hasattr(torch.version, "hip") and torch.version.hip:
@@ -463,8 +570,63 @@ def _detect_platform() -> PlatformInfo:
         return _detect_npu_platform()
 
     raise RuntimeError(
-        "tokenspeed-kernel requires an NVIDIA CUDA, AMD ROCm, or Ascend NPU device."
+        "tokenspeed-kernel requires an NVIDIA CUDA, AMD ROCm, Moore Threads "
+        "MUSA, or Ascend NPU device."
     )
+
+
+def _detect_musa_platform() -> PlatformInfo:
+    """Detect a Moore Threads MUSA platform exposed through torch_musa."""
+    props = torch.musa.get_device_properties(torch.musa.current_device())
+    return PlatformInfo(
+        vendor=_MUSA_VENDOR,
+        arch_version=_musa_arch_version(props),
+        device_name=props.name,
+        device_count=torch.musa.device_count(),
+        total_memory=props.total_memory,
+        memory_bandwidth=_estimate_bandwidth(props),
+        sm_count=getattr(props, "multi_processor_count", 0),
+        max_threads_per_sm=getattr(props, "max_threads_per_multi_processor", 0),
+        max_shared_memory_per_sm=getattr(props, "max_shared_memory_per_block", 0),
+        sm_features=_get_musa_sm_features(),
+        runtime_features=frozenset(),
+        interconnect=_detect_musa_interconnect(),
+        kernel_solutions=_MUSA_KERNEL_SOLUTIONS,
+    )
+
+
+def _musa_arch_version(props: object) -> ArchVersion:
+    """The MUSA processor generation, reported as a ``major.minor`` pair.
+
+    MUSA counts processors rather than SMs: an S5000 is ``mp_31`` and reports
+    ``3.1``. These numbers are compared only against other MUSA arch floors, so
+    they never collide with the NVIDIA ``sm_XX`` or AMD ``gfxXXXX`` scales.
+    """
+    return ArchVersion(
+        int(getattr(props, "major", 0) or 0), int(getattr(props, "minor", 0) or 0)
+    )
+
+
+def _get_musa_sm_features() -> frozenset[str]:
+    """Determine MUSA SM features.
+
+    Only the tensor-core dtype support that the portable kernels actually rely
+    on is advertised: S5000 has f16/bf16 matrix units, while FP8 and FP4
+    availability depends on the MUSA runtime generation and on kernels that no
+    MUSA build implements yet. Advertising less keeps arch-specialized NVIDIA
+    kernels out of selection instead of failing on them at launch.
+    """
+    return frozenset({"tensor_core:f16"})
+
+
+def _detect_musa_interconnect() -> InterconnectInfo | None:
+    """Detect MUSA multi-GPU interconnect topology."""
+    try:
+        if torch.musa.device_count() <= 1:
+            return InterconnectInfo(topology="single_gpu")
+        return InterconnectInfo(topology="pcie")
+    except Exception:
+        return None
 
 
 def _detect_npu_platform() -> PlatformInfo:

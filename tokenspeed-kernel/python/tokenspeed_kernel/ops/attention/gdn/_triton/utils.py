@@ -125,8 +125,14 @@ def check_pytorch_version(version_s: str = "2.4") -> bool:
 def _triton_backend_unavailable(cause: Exception) -> NoReturn:
     raise RuntimeError(
         f"Triton backend probe failed ({type(cause).__name__}: {cause}). "
-        "Only NVIDIA CUDA and AMD HIP backends are supported."
+        "Only NVIDIA CUDA, AMD HIP and Moore Threads MUSA backends are supported."
     ) from cause
+
+
+# Triton backend names that drive a MUSA device. The name a MUSA Triton build
+# reports is not settled across releases, so both known spellings map to the
+# torch module that owns those tensors.
+_MUSA_TRITON_BACKENDS = frozenset({"musa", "mtgpu"})
 
 
 @functools.cache
@@ -134,9 +140,14 @@ def get_available_device() -> str:
     if hasattr(torch, "npu") and torch.npu.is_available():
         return "npu"
     try:
-        return triton.runtime.driver.active.get_current_target().backend
+        backend = triton.runtime.driver.active.get_current_target().backend
     except Exception as e:
+        # A MUSA runtime answers through torch.musa even when its Triton build
+        # exposes no driver target through the CUDA-shaped probe above.
+        if hasattr(torch, "musa") and torch.musa.is_available():
+            return "musa"
         _triton_backend_unavailable(e)
+    return "musa" if backend in _MUSA_TRITON_BACKENDS else backend
 
 
 device = get_available_device() if get_available_device() != "hip" else "cuda"

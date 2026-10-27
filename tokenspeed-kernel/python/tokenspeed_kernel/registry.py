@@ -329,7 +329,11 @@ class KernelRegistry:
         if features is not None:
             specs = [s for s in specs if features.issubset(s.features)]
         if platform:
-            specs = [s for s in specs if s.capability.satisfied_by(platform)]
+            specs = [
+                s
+                for s in specs
+                if s.capability.satisfied_by(platform, solution=s.solution)
+            ]
         if format_signature:
             specs = [
                 s

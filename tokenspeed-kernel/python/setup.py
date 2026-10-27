@@ -21,9 +21,9 @@
 """
 Build and package tokenspeed_kernel.
 
-This script will automatically detect the CUDA or ROCm backend and install the
-appropriate dependencies, and compile the native kernels for the selected
-backend.
+This script will automatically detect the CUDA, ROCm, or MUSA backend and
+install the appropriate dependencies, and compile the native kernels for the
+selected backend.
 
 Dependency handling
 ===================
@@ -47,8 +47,9 @@ Kernel compilation
 ==================
 
 Compiles .cu files into shared libraries (.so) loaded via tvm_ffi.load_module().
-On systems without an NVIDIA CUDA build target, the build is skipped and the
-package installs as a pure-Python stub. Cached CUDA binaries carry a toolchain
+On systems without an NVIDIA CUDA build target, and on every non-CUDA backend
+including MUSA, the build is skipped and the package installs as a pure-Python
+stub that reaches hardware through the registered portable Triton kernels. Cached CUDA binaries carry a toolchain
 identity, so CUDA 12/13 and architecture changes invalidate them in either
 direction. The cu129 source recipe always rebuilds its in-tree CUDA kernels.
 """
@@ -77,7 +78,7 @@ REQUIREMENTS_DIR = ROOT / "requirements"
 THIRDPARTY_DIR = ROOT / "tokenspeed_kernel" / "thirdparty"
 BASE_VERSION = "0.1.4"
 BACKEND_ENV = "TOKENSPEED_KERNEL_BACKEND"
-VALID_BACKENDS = {"cuda", "rocm", "npu"}
+VALID_BACKENDS = {"cuda", "rocm", "npu", "musa"}
 DEFAULT_CUDA_ARCHS = ("100a", "103a")
 
 # CUDA kernels source and output directories
@@ -216,6 +217,15 @@ def _is_rocm_platform() -> bool:
     return Path("/opt/rocm").exists()
 
 
+def _is_musa_platform() -> bool:
+    """Detect a Moore Threads MUSA toolchain without importing torch."""
+    if os.environ.get("MUSA_HOME"):
+        return True
+    if shutil.which("mcc") is not None:
+        return True
+    return Path("/usr/local/musa").exists()
+
+
 def _selected_backend() -> str:
     override = os.environ.get(BACKEND_ENV, "").strip().lower()
     if override:
@@ -228,10 +238,13 @@ def _selected_backend() -> str:
         return "cuda"
     if _is_rocm_platform():
         return "rocm"
+    if _is_musa_platform():
+        return "musa"
 
     raise RuntimeError(
-        "Unable to detect CUDA or ROCm for tokenspeed_kernel dependencies. "
-        f"Set {BACKEND_ENV}=cuda, {BACKEND_ENV}=rocm, or {BACKEND_ENV}=npu."
+        "Unable to detect CUDA, ROCm, or MUSA for tokenspeed_kernel dependencies. "
+        f"Set {BACKEND_ENV}=cuda, {BACKEND_ENV}=rocm, {BACKEND_ENV}=musa, "
+        f"or {BACKEND_ENV}=npu."
     )
 
 

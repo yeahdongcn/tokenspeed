@@ -1,0 +1,4 @@
+# MUSA has no vendor kernel packages yet: every MUSA build reaches the hardware
+# through the portable Triton kernels registered in `ops/`. Keep this file so
+# the backend loads the same way as the others; add vendor wheels here if a
+# MUSA kernel package ever becomes a runtime dependency.

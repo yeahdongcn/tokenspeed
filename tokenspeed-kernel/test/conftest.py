@@ -172,6 +172,25 @@ def mi450_platform() -> PlatformInfo:
 
 
 @pytest.fixture
+def musa_platform() -> PlatformInfo:
+    return PlatformInfo(
+        vendor="musa",
+        arch_version=ArchVersion(3, 1),
+        device_name="MTT S5000",
+        device_count=8,
+        total_memory=48 * (1024**3),
+        memory_bandwidth=1600.0,
+        sm_count=104,
+        max_threads_per_sm=2048,
+        max_shared_memory_per_sm=64 * 1024,
+        sm_features=frozenset({"tensor_core:f16"}),
+        runtime_features=frozenset(),
+        interconnect=InterconnectInfo(topology="pcie"),
+        kernel_solutions=frozenset({"triton", "torch"}),
+    )
+
+
+@pytest.fixture
 def b200_platform() -> PlatformInfo:
     return PlatformInfo(
         vendor="nvidia",

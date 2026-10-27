@@ -186,8 +186,11 @@ def verify_chain_target_sampled(
         raise ValueError(
             f"target_sampled must be int32 or int64, got {target_sampled.dtype}"
         )
-    if candidates.device.type != "cuda":
-        raise ValueError("verify_chain_target_sampled requires CUDA tensors")
+    if candidates.device.type not in ("cuda", "musa"):
+        raise ValueError(
+            "verify_chain_target_sampled requires accelerator tensors, got "
+            f"{candidates.device.type}"
+        )
     if any(
         t.device != candidates.device
         for t in (predicts, accept_index, accept_token_num, target_sampled)
