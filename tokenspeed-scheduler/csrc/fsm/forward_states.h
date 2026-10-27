@@ -108,6 +108,16 @@ struct Submitted {
     AdmissionResources admission;
 };
 
+struct PrefillCheckpoint {
+    std::int32_t tokens;
+    std::vector<CacheBlockRef> blocks;
+};
+
+struct PrefillCompletion {
+    std::int32_t num_computed_tokens;
+    std::vector<PrefillCheckpoint> checkpoints;
+};
+
 // Everything a page-holding state owns on the request's behalf: the KV
 // pages, the request-pool slot, the prefix-cache progress and the count of
 // forwards still out against those pages. Move-only, and moved as ONE
@@ -126,10 +136,16 @@ struct ForwardResources {
     //
     // It lives here, not on the states that happen to consume a result: a
     // forward is out against the PAGES, and every page-holding state has
-    // this bundle. A prefill chunk produces no ExtendResult, but its result
-    // still writes KV into this request's tables -- retract it mid-flight
+    // this bundle. An intermediate prefill chunk reports an empty result,
+    // but still writes KV into this request's tables -- retract it mid-flight
     // and the write lands on pages someone else now owns.
     std::int32_t results_in_flight{0};
+    // Restricted checkpoints publish on their prefill result, never on a
+    // decode admission or result. Results arrive in scheduled order. Keep an
+    // entry even for a prefill with no checkpoint, so overlap cannot mistake
+    // an earlier chunk's result for a later chunk's. References retain the
+    // exact prefill outputs across the ordinary state rotations.
+    std::vector<PrefillCompletion> prefill_completions;
 
     std::int32_t RequestPoolIndex() const { return req_pool_index.valid() ? req_pool_index.slot_ : -1; }
     void TrackScheduledForward() { ++results_in_flight; }

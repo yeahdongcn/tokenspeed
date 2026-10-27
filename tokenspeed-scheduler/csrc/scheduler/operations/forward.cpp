@@ -159,8 +159,9 @@ bool canConsumeReservedTokensInPlace(const CacheCoordinator& coordinator, std::s
 }  // namespace
 
 RequestProgress AdvanceRequestProgress(const Request& request, fsm::CacheProgress& cache_progress,
-                                       std::int32_t num_computed_tokens, std::int32_t prefix_granularity,
+                                       std::int32_t num_computed_tokens, const CacheCoordinator& coordinator,
                                        bool stream_completed_to_host, PublicationPoint point) {
+    const std::int32_t prefix_granularity = coordinator.PrefixGranularity();
     const std::int32_t first_new_prefix_page = static_cast<std::int32_t>(cache_progress.prefix_hashes.size());
     const std::int32_t filled_prefix_pages = num_computed_tokens / prefix_granularity;
     if (filled_prefix_pages > first_new_prefix_page) {
@@ -176,7 +177,10 @@ RequestProgress AdvanceRequestProgress(const Request& request, fsm::CacheProgres
     // A final point publishes the frontier's state even when its pages were
     // all published by an earlier step (a D request leaving at a page-aligned
     // frontier): the checkpoint is keyed by the last page's chain hash.
-    const bool publish_state = point != PublicationPoint::kChunk;
+    // Restricted State checkpoints publish only on their prefill result,
+    // using the outputs retained for that forward. Decode, finish and
+    // retraction never publish them, including a preserved prefill endpoint.
+    const bool publish_state = point != PublicationPoint::kChunk && coordinator.CheckpointGranularity() == 1;
     const bool state_only = publish_state && !tail && !cache_progress.prefix_hashes.empty() &&
                             num_computed_tokens == filled_prefix_pages * prefix_granularity;
     // The in-forward State checkpoint a scheduled forward wrote is published
@@ -184,7 +188,8 @@ RequestProgress AdvanceRequestProgress(const Request& request, fsm::CacheProgres
     // which the returned spans view.
     cache_progress.published_state_checkpoint_blocks.clear();
     std::int32_t state_checkpoint_pages = 0;
-    if (cache_progress.state_checkpoint_tokens > 0 && num_computed_tokens >= cache_progress.state_checkpoint_tokens) {
+    if (coordinator.CheckpointGranularity() == 1 && cache_progress.state_checkpoint_tokens > 0 &&
+        num_computed_tokens >= cache_progress.state_checkpoint_tokens) {
         _assert(cache_progress.state_checkpoint_tokens % prefix_granularity == 0,
                 "an in-forward State checkpoint sits at a page boundary");
         state_checkpoint_pages = cache_progress.state_checkpoint_tokens / prefix_granularity;
@@ -215,7 +220,7 @@ namespace {
 template <typename Event>
     requires(std::same_as<Event, fsm::SchedulePrefillFirstChunkEvent> || std::same_as<Event, fsm::SchedulePrefillEvent>)
 PrefillOperation applyPrefillEvent(Request& request, Event& event, const CacheCoordinator& coordinator,
-                                   std::span<const std::string> group_ids) {
+                                   std::span<const std::string> group_ids, const SchedulerConfig& config) {
     request.Apply(event);
     const PrefillInfo info = request.CurrentPrefillInfo();
 
@@ -231,7 +236,7 @@ PrefillOperation applyPrefillEvent(Request& request, Event& event, const CacheCo
     fillBlockTables(operation, request, coordinator, group_ids);
     // The in-forward State checkpoint this forward writes: its position in
     // the chunk, and each State group's block as the row's third entry.
-    const fsm::CacheProgress& cache_progress = request.CacheProgress();
+    fsm::CacheProgress& cache_progress = request.CacheProgressRef();
     const std::int32_t checkpoint = cache_progress.state_checkpoint_tokens;
     if (checkpoint > info.already_scheduled_len && checkpoint < info.already_scheduled_len + info.extend_len) {
         operation.extend_state_checkpoint_len = checkpoint - info.already_scheduled_len;
@@ -241,6 +246,28 @@ PrefillOperation applyPrefillEvent(Request& request, Event& event, const CacheCo
                     coordinator.Allocator(static_cast<std::int32_t>(i)).ResolveCacheBlockId(block->Location()));
             }
         }
+    }
+    if (coordinator.CheckpointGranularity() > 1 && !config.disable_prefix_cache &&
+        !request.Is<fsm::RemotePrefilling>()) {
+        const std::int32_t end = info.already_scheduled_len + info.extend_len;
+        fsm::PrefillCompletion completion{.num_computed_tokens = end};
+        if (checkpoint > 0) {
+            completion.checkpoints.push_back({checkpoint, std::move(cache_progress.state_checkpoint_blocks)});
+            cache_progress.state_checkpoint_tokens = 0;
+        }
+        const std::int32_t entrance = inForwardStateCheckpoint(config, coordinator, request.PrefillSize());
+        if (end % coordinator.CheckpointGranularity() == 0 &&
+            (end == request.PrefillSize() || end == entrance || end == cache_progress.junction_tokens)) {
+            fsm::PrefillCheckpoint endpoint{.tokens = end, .blocks = std::vector<CacheBlockRef>(group_ids.size())};
+            const auto& tables = request.BlockTablesRef();
+            for (std::size_t i = 0; i < group_ids.size(); ++i) {
+                if (coordinator.GroupIsState(i)) {
+                    endpoint.blocks[i] = tables[i].Blocks()[1];
+                }
+            }
+            completion.checkpoints.push_back(std::move(endpoint));
+        }
+        request.PrefillCompletionsRef().push_back(std::move(completion));
     }
     return operation;
 }
@@ -564,8 +591,7 @@ std::optional<fsm::SchedulePrefillEvent> Scheduler::schedulePrefill(
         cache_progress.junction_tokens = 0;
     }
     const RequestProgress progress = AdvanceRequestProgress(
-        *request, cache_progress, request->NumComputedTokens(), coordinator_.PrefixGranularity(),
-        config_.StreamsDeviceCacheToHost(),
+        *request, cache_progress, request->NumComputedTokens(), coordinator_, config_.StreamsDeviceCacheToHost(),
         ends_at_junction || ends_at_state_checkpoint ? PublicationPoint::kOwnerContinues : PublicationPoint::kChunk);
 
     std::vector<BlockTable>& tables = request->BlockTablesRef();
@@ -648,21 +674,22 @@ std::optional<fsm::ScheduleDecodeEvent> Scheduler::scheduleDecode(ExecutionPlan&
         }
         reserve_tokens = std::max(decode_end - reserved_end, 0);
     }
-    // The first decode on the fused role is the owner's prompt end: the
+    // For unrestricted State groups, the first fused decode is the prompt end: the
     // partial page and the state are published and the owner moves to fresh
     // blocks (the state by rotation: the first decode reads slot 0 and writes
     // the fresh slot 1). The P and D roles publish at finish only -- the P
     // never writes again, the D's prompt-end state arrived by transfer or was
-    // claimed. Every later decode writes slot 1 in place and lets slot 0 go.
+    // claimed. Restricted checkpoints already publish on the prefill result;
+    // rotation still protects that output from the first decode's write.
+    // Every later decode writes slot 1 in place and lets slot 0 go.
     const bool first_decode = request->Is<fsm::PrefillDone>();
     const bool prompt_end = first_decode && config_.role == Role::kFused && !config_.disable_prefix_cache;
     const StateStep state_step{prompt_end                                 ? StateStep::Kind::kRotate
                                : first_decode && config_.role == Role::kD ? StateStep::Kind::kKeep
                                                                           : StateStep::Kind::kRelease};
-    const RequestProgress progress =
-        AdvanceRequestProgress(*request, cache_progress, num_computed_tokens, coordinator_.PrefixGranularity(),
-                               config_.StreamsDeviceCacheToHost() && first_decode,
-                               prompt_end ? PublicationPoint::kOwnerContinues : PublicationPoint::kChunk);
+    const RequestProgress progress = AdvanceRequestProgress(
+        *request, cache_progress, num_computed_tokens, coordinator_, config_.StreamsDeviceCacheToHost() && first_decode,
+        prompt_end ? PublicationPoint::kOwnerContinues : PublicationPoint::kChunk);
 
     if (!progress.completed_pages && state_step.kind != StateStep::Kind::kRotate &&
         canConsumeReservedTokensInPlace(coordinator_, tables, reserve_tokens, num_computed_tokens)) {
@@ -686,7 +713,7 @@ PrefillOperation Scheduler::applyEventAndBuildOperation(Request* request, fsm::S
                                                         std::vector<LoadBackOperation>& load_back_operations) {
     const auto* admission = request->AdmissionResourcesPtr();
     const auto storage_id = admission->storage_hold ? admission->storage_hold->operation_id : 0;
-    PrefillOperation operation = applyPrefillEvent(*request, event, coordinator_, cache_group_ids_);
+    PrefillOperation operation = applyPrefillEvent(*request, event, coordinator_, cache_group_ids_, config_);
     std::vector<BlockTransfer> load_pairs = event.TakeLoadPairs();
     if (!load_pairs.empty()) {
         load_back_operations.push_back(tier_transfers_.StartPrefixLoad(std::move(load_pairs)));
@@ -698,7 +725,7 @@ PrefillOperation Scheduler::applyEventAndBuildOperation(Request* request, fsm::S
 }
 
 PrefillOperation Scheduler::applyEventAndBuildOperation(Request* request, fsm::SchedulePrefillEvent event) {
-    return applyPrefillEvent(*request, event, coordinator_, cache_group_ids_);
+    return applyPrefillEvent(*request, event, coordinator_, cache_group_ids_, config_);
 }
 
 DecodeOperation Scheduler::applyEventAndBuildOperation(Request* request, fsm::ScheduleDecodeEvent event) {
@@ -819,9 +846,8 @@ Scheduler::VictimChoice Scheduler::chooseVictim(std::span<Request* const> candid
 void Scheduler::publishCompletedPrefix(Request& victim) {
     fsm::CacheProgress cache_progress = victim.CacheProgress();
     const std::int32_t num_computed_tokens = victim.NumComputedTokens();
-    RequestProgress progress =
-        AdvanceRequestProgress(victim, cache_progress, num_computed_tokens, coordinator_.PrefixGranularity(),
-                               /*stream_completed_to_host=*/false, PublicationPoint::kFinal);
+    RequestProgress progress = AdvanceRequestProgress(victim, cache_progress, num_computed_tokens, coordinator_,
+                                                      /*stream_completed_to_host=*/false, PublicationPoint::kFinal);
     if (progress.completed_pages) {
         // A publication is a KV-event mutation: the newly hashed pages (decode
         // pages no admission has registered yet) and the tail need their token
@@ -851,7 +877,7 @@ bool Scheduler::imageFits(const Request& request) const {
     fsm::CacheProgress cache_progress = request.CacheProgress();
     const std::int32_t num_computed_tokens = request.NumComputedTokens();
     const RequestProgress progress =
-        AdvanceRequestProgress(request, cache_progress, num_computed_tokens, coordinator_.PrefixGranularity(),
+        AdvanceRequestProgress(request, cache_progress, num_computed_tokens, coordinator_,
                                /*stream_completed_to_host=*/false, PublicationPoint::kFinal);
     const std::vector<std::vector<ImageSlot>> published =
         coordinator_.PublishedDataSlotsAfter(request.BlockTablesRef(), num_computed_tokens, progress);

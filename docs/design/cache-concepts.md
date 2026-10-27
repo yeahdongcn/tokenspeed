@@ -251,7 +251,13 @@ prompt-end checkpoint it still holds in slot 0 is the canonical block.
 
 State groups may additionally restrict reusable checkpoints with
 `checkpoint_granularity`: intermediate prefill forwards end on its multiples,
-and only states at these positions are published or matched. A forward may
+and only prefill-produced states at these positions are published or matched.
+Publication happens when the corresponding local prefill result lands. Each
+scheduled prefill retains its eligible output blocks until that result, so
+overlap cannot publish a later forward's state in their place. Decode never
+publishes a checkpoint, including its first admission, result, finish and
+retraction. The private retraction image remains valid for its own request.
+A forward may
 span several segments; the existing in-forward checkpoint mechanism saves the
 last segment entrance independently of the live endpoint.
 This is a numerical continuation constraint, not a block's token span. The

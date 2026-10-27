@@ -292,11 +292,175 @@ TEST_F(AlignedStateCheckpointSuite, AbortDoesNotPublishTheInteriorOutput) {
     const auto empty = scheduler_->EmptyLcmBlocks();
     Submit(RequestWithTokens("seed", MakeTokens(8192)));
     ASSERT_EQ(PlanAndStateRow("seed").size(), 3u);
-    SendForwardDone("seed", {99});
     SendAbortEvent("seed");
     PlanOnce();
     EXPECT_EQ(scheduler_->EmptyLcmBlocks(), empty);
     EXPECT_EQ(Probe("miss", MakeTokens(8192)).prefix_tokens, 0);
+}
+
+TEST_F(AlignedStateCheckpointSuite, PrefillResultPublishesBeforeAnyDecodeOrFinish) {
+    for (const bool host_cache : {false, true}) {
+        Reset(host_cache, /*decode_width=*/1);
+        Submit(RequestWithTokens("seed", MakeTokens(8192)));
+        ExecutionPlan plan;
+        const auto state = PlanAndStateRow("seed", &plan);
+        ASSERT_EQ(state.size(), 3u);
+        SendForwardDone("seed", {99});
+        // Abort only drops the owner. No decode admission or finish may be
+        // needed to publish the two checkpoints the prefill already wrote.
+        SendAbortEvent("seed");
+        AckWriteBacks(PlanOnce());
+        if (host_cache) {
+            ASSERT_TRUE(scheduler_->ClearL1Cache());
+        }
+        const Resume interior = Probe("interior", MakeTokens(8192));
+        EXPECT_EQ(interior.prefix_tokens, 4096);
+        const Resume endpoint = Probe("endpoint", MakeTokens(8193));
+        EXPECT_EQ(endpoint.prefix_tokens, 8192);
+        if (!host_cache) {
+            EXPECT_EQ(interior.state_row.at(0), state[2]);
+            EXPECT_EQ(endpoint.state_row.at(0), state[1]);
+        }
+    }
+}
+
+TEST_F(AlignedStateCheckpointSuite, FirstDecodeDoesNotPublishAnUnlandedPrefillCheckpoint) {
+    Reset(/*host_cache=*/false, /*decode_width=*/1);
+    Submit(RequestWithTokens("seed", MakeTokens(8192)));
+    ASSERT_EQ(PlanAndStateRow("seed").size(), 3u);
+    // Overlap can schedule decode before the prefill result lands. Neither
+    // its preserved prompt endpoint nor its interior output is public yet.
+    ASSERT_EQ(PlanAndStateRow("seed").size(), 2u);
+    SendAbortEvent("seed");
+    PlanOnce();
+    EXPECT_EQ(Probe("miss", MakeTokens(8193)).prefix_tokens, 0);
+}
+
+TEST_F(AlignedStateCheckpointSuite, OverlappedPrefillResultsPublishTheirOwnOutputsInOrder) {
+    for (const std::int32_t landed : {1, 2, 3}) {
+        SCOPED_TRACE(landed);
+        config_ = MakeConfig();
+        config_.max_scheduled_tokens = 4096;
+        config_.enable_kv_cache_events = true;
+        scheduler_ = std::make_unique<Scheduler>(config_);
+        Submit(RequestWithTokens("seed", MakeTokens(12288)));
+        std::map<std::int32_t, std::int32_t> outputs;
+        for (const std::int32_t end : {4096, 8192, 12288}) {
+            const auto state = PlanAndStateRow("seed");
+            ASSERT_EQ(state.size(), 2u);
+            outputs[end] = state[1];
+            scheduler_->DrainKvEvents();
+        }
+        ASSERT_EQ(PlanAndStateRow("seed").size(), 2u);  // first decode is already scheduled
+        scheduler_->DrainKvEvents();
+        for (std::int32_t result = 1; result <= landed; ++result) {
+            SendForwardDone("seed", result == 3 ? std::vector<std::int32_t>{99} : std::vector<std::int32_t>{});
+            scheduler_->DrainKvEvents();
+        }
+        SendAbortEvent("seed");
+        PlanOnce();
+        const Resume hit = Probe("probe", MakeTokens(12300));
+        const std::int32_t expected = landed == 1 ? 0 : landed * 4096;
+        EXPECT_EQ(hit.prefix_tokens, expected);
+        if (expected != 0) {
+            EXPECT_EQ(hit.state_row.at(0), outputs.at(expected))
+                << "publication must retain the completed prefill's output, not the current decode slot";
+        }
+    }
+}
+
+TEST_F(AlignedStateCheckpointSuite, DecodeRoleDoesNotPublishTheTransferredPromptState) {
+    config_ = MakeConfig();
+    config_.role = Role::kD;
+    for (auto& group : config_.cache_groups) {
+        group.transfer_policy =
+            group.attn_kind == AttnKind::kState ? CacheTransferPolicy::LatestSnapshot : CacheTransferPolicy::FullSuffix;
+    }
+    scheduler_ = std::make_unique<Scheduler>(config_);
+    Submit(RequestWithTokens("seed", MakeTokens(8192)));
+    ExecutionEvent bootstrap;
+    bootstrap.With(pd::BootstrappedEvent{"seed"});
+    scheduler_->Advance(std::move(bootstrap));
+    ASSERT_TRUE(PlanOnce().remote_prefill.has_value());
+    ExecutionEvent remote_done;
+    remote_done.With(pd::RemotePrefillDoneEvent{"seed", 8193});
+    scheduler_->Advance(std::move(remote_done));
+    ASSERT_NE(FindForwardBatch(PlanOnce()), nullptr);
+    SendForwardDone("seed", {8194});
+    SendFinish("seed");
+    PlanOnce();
+    Submit(RequestWithTokens("probe", MakeTokens(8192)));
+    ExecutionEvent probe_bootstrap;
+    probe_bootstrap.With(pd::BootstrappedEvent{"probe"});
+    scheduler_->Advance(std::move(probe_bootstrap));
+    const ExecutionPlan probe = PlanOnce();
+    ASSERT_TRUE(probe.remote_prefill.has_value());
+    // D may still reuse KV pages. A cached prompt-end State would instead
+    // appear in slot 0 and cause that group's transfer to be omitted.
+    EXPECT_LE(StateRow(*probe.remote_prefill, "state0", "probe").at(0), 0);
+}
+
+TEST_F(AlignedStateCheckpointSuite, DecodeCannotPublishAnAlignedFrontierAtFinish) {
+    for (const bool host_cache : {false, true}) {
+        for (const bool finish_in_flight : {false, true}) {
+            for (const std::int32_t prompt : {4095, 8191}) {
+                SCOPED_TRACE(::testing::Message()
+                             << "host=" << host_cache << " in_flight=" << finish_in_flight << " prompt=" << prompt);
+                config_ = MakeConfig();
+                config_.disable_l2_cache = !host_cache;
+                config_.enable_mixed_prefill_decode = true;
+                config_.decode_input_tokens = 1;
+                scheduler_ = std::make_unique<Scheduler>(config_);
+                Submit(RequestWithTokens("seed", MakeTokens(prompt)));
+                ASSERT_NE(FindForwardBatch(PlanOnce()), nullptr);
+                SendForwardDone("seed", {prompt + 1});
+                AckWriteBacks(PlanOnce());  // first decode must publish no checkpoint
+                if (finish_in_flight) {
+                    SendFinish("seed");
+                }
+                SendForwardDone("seed", {prompt + 2});  // decode consumed one token: frontier 4096 or 8192
+                if (!finish_in_flight) {
+                    SendFinish("seed");
+                }
+                AckWriteBacks(PlanOnce());
+                if (host_cache) {
+                    ASSERT_TRUE(scheduler_->ClearL1Cache());
+                }
+                EXPECT_EQ(Probe("hit", MakeTokens(prompt + 2)).prefix_tokens, prompt / 4096 * 4096)
+                    << "only the prefill-created entrance may be reused, not the aligned decode state";
+            }
+        }
+    }
+}
+
+TEST_F(AlignedStateCheckpointSuite, RetractedDecodeStateRestoresPrivatelyWithoutBecomingAPrefixHit) {
+    config_ = MakeConfig();
+    config_.disable_l2_cache = false;
+    config_.debug_force_retraction_interval = 3;
+    config_.decode_input_tokens = 1;
+    scheduler_ = std::make_unique<Scheduler>(config_);
+    Submit(RequestWithTokens("seed", MakeTokens(4095)));
+    const ExecutionPlan prefill = PlanOnce();  // plan 1: prefill
+    ASSERT_NE(FindForwardBatch(prefill), nullptr);
+    AckWriteBacks(prefill);
+    SendForwardDone("seed", {4096});
+    const ExecutionPlan decode = PlanOnce();  // plan 2: decode consumes token 4096
+    ASSERT_NE(FindForwardBatch(decode), nullptr);
+    AckWriteBacks(decode);
+    SendForwardDone("seed", {4097});
+    const ExecutionPlan retraction = PlanOnce();  // plan 3: frontier 4096
+    ASSERT_EQ(scheduler_->RetractedSize(), 1u);
+    ASSERT_NE(FindSnapshotStore(retraction), nullptr);
+    AckImageStores(retraction);
+    const ExecutionPlan readmit = PlanOnce();
+    ASSERT_NE(FindRestore(readmit), nullptr);
+    AckRestores(readmit);
+    const auto restored_state = PlanAndStateRow("seed");
+    ASSERT_GT(restored_state.at(1), 0) << "the request can still resume its private decode state";
+    SendForwardDone("seed", {4098});
+    SendAbortEvent("seed");
+    EXPECT_EQ(Probe("miss", MakeTokens(4097)).prefix_tokens, 0)
+        << "the decode image is not a canonical prefill checkpoint";
 }
 
 TEST_F(AlignedStateCheckpointSuite, AFinalTailDoesNotAlignTheNextRequestsPackedOffset) {

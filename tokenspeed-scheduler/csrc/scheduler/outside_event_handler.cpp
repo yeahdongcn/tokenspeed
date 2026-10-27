@@ -116,9 +116,8 @@ std::optional<WriteBackOperation> Scheduler::publishCompletedPages(Request& requ
     // holds the state after the last consumed token and the KV rows below it
     // are complete.
     const std::int32_t num_computed_tokens = request.NumComputedTokens();
-    RequestProgress completed =
-        AdvanceRequestProgress(request, progress, num_computed_tokens, coordinator_.PrefixGranularity(),
-                               /*stream_completed_to_host=*/false, PublicationPoint::kFinal);
+    RequestProgress completed = AdvanceRequestProgress(request, progress, num_computed_tokens, coordinator_,
+                                                       /*stream_completed_to_host=*/false, PublicationPoint::kFinal);
     std::vector<std::string> store_hashes = progress.prefix_hashes;
     if (completed.completed_pages) {
         registerKvEventPublication(request, progress.prefix_hashes, *completed.completed_pages);
@@ -148,6 +147,33 @@ void Scheduler::handleEvent(const forward::ExtendResult& event) {
     if (Request* request = findRequest(event.request_id)) {
         request->NoteResultLanded();
         request->Apply(fsm::ExtendResultEvent{event.tokens});
+        if (request->HoldsPages() && !request->PrefillCompletionsRef().empty()) {
+            auto& completions = request->PrefillCompletionsRef();
+            fsm::PrefillCompletion completion = std::move(completions.front());
+            completions.erase(completions.begin());
+            auto& progress = request->CacheProgressRef();
+            RequestProgress completed =
+                AdvanceRequestProgress(*request, progress, completion.num_computed_tokens, coordinator_,
+                                       config_.StreamsDeviceCacheToHost(), PublicationPoint::kChunk);
+            if (completed.completed_pages) {
+                registerKvEventPublication(*request, progress.prefix_hashes, *completed.completed_pages);
+                coordinator_.CacheCompletedBlocks(request->BlockTablesRef(), completed, progress.access_epoch);
+            }
+            // A later forward may already have rotated the live state. Only
+            // the blocks captured for this prefill can be published here.
+            for (auto& checkpoint : completion.checkpoints) {
+                completed.completed_pages = CompletedPages{
+                    .prefix_hashes = progress.prefix_hashes,
+                    .first_new_prefix_page = static_cast<std::int32_t>(progress.prefix_hashes.size()),
+                    .state_checkpoint_pages = checkpoint.tokens / coordinator_.PrefixGranularity(),
+                    .state_checkpoint_blocks = checkpoint.blocks,
+                    .boundary_kind = CacheBoundaryKind::kEndpoint,
+                    .stream_completed_to_host = config_.StreamsDeviceCacheToHost(),
+                };
+                registerKvEventPublication(*request, progress.prefix_hashes, *completed.completed_pages);
+                coordinator_.CacheCompletedBlocks(request->BlockTablesRef(), completed, progress.access_epoch);
+            }
+        }
         if (!event.spec_candidate_ids.empty()) {
             request->StoreSpecCandidates(event.spec_candidate_ids);
         }

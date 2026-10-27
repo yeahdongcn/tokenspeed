@@ -230,6 +230,18 @@ state block is never written again: rotation moves it to slot 0, where it is
 read only, and the next step releases the request's reference while the
 cache keeps the block.
 
+For State groups with `checkpoint_granularity > 1`, checkpoint publication
+belongs exclusively to the local prefill result. The scheduled forward
+retains its eligible endpoint and interior checkpoint blocks in
+`ForwardResources::prefill_completions`; results consume these entries in
+scheduled order, including entries for chunks with no checkpoint. Ordinary
+rotation still supplies the next forward's input and fresh output, so an
+overlapped decode cannot overwrite the retained prefill outputs. The result
+publishes the retained blocks through the existing checkpoint publication
+contract. No decode admission, decode result, finish or retraction publishes
+a restricted checkpoint. A retraction may still save private state for the
+same request's restore. Unrestricted State groups keep the policy above.
+
 **In-forward checkpoint (opt-in).** By default a prompt that diverges inside
 the last page of an earlier long prompt, or resends it, resumes from an
 earlier checkpoint: the prompt-end state cannot serve a hit that must replay
@@ -314,7 +326,11 @@ segment, `(prompt_tokens - 1) / grain * grain`, including when the whole
 prompt fits one round. Thus 8192 tokens run in one forward while saving the
 state at 4096. Prefix reuse stays strictly below the prompt length, so a full
 8192 match resumes at most at 4096. Only that extra entrance is retained;
-ordinary aligned natural endpoints remain reusable. The grain constrains
+aligned prefill endpoints remain reusable. These checkpoints publish only
+when their prefill results land. Decode never publishes them, including its
+first admission, result, finish or retraction. Retraction still saves the
+private live state for its own request to resume.
+The grain constrains
 each request's logical position, independently of its packed batch offset.
 Unrestricted groups preserve their original scheduling and publication.
 

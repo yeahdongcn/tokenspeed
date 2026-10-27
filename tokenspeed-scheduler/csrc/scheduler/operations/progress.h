@@ -28,6 +28,8 @@
 
 namespace tokenspeed {
 
+class CacheCoordinator;
+
 // What a request's computed frontier is to the prefix cache at the moment an
 // admission, a finish or a retraction reads it.
 enum class PublicationPoint {
@@ -46,10 +48,13 @@ enum class PublicationPoint {
 // Hashes the full prefix pages num_computed_tokens has filled since the
 // previous publication, and at a non-chunk point the partial page beyond
 // them, and states the request's progress for the coordinator. A non-chunk
-// point with nothing new to hash still publishes the frontier's state. The
-// returned spans view cache_progress, which must outlive their use.
+// point with nothing new to hash still publishes an eligible frontier state.
+// Restricted State checkpoints publish separately on their prefill result;
+// this function never publishes them, including at first decode, finish or
+// retraction. The returned spans view cache_progress, which must outlive
+// their use.
 RequestProgress AdvanceRequestProgress(const Request& request, fsm::CacheProgress& cache_progress,
-                                       std::int32_t num_computed_tokens, std::int32_t prefix_granularity,
+                                       std::int32_t num_computed_tokens, const CacheCoordinator& coordinator,
                                        bool stream_completed_to_host, PublicationPoint point);
 
 }  // namespace tokenspeed

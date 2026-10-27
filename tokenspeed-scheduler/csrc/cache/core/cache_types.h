@@ -92,7 +92,8 @@ struct CacheGroupSpec {
     // Cyclic owners of the virtual blocks; must divide cache_blocks_per_lcm_block.
     std::int32_t shard_count{1};
     // State checkpoints may only be reused/published at multiples of this
-    // token count. 1 preserves arbitrary natural checkpoints. No row span.
+    // token count and must be produced by prefill. 1 preserves arbitrary
+    // natural checkpoints, including decode endpoints. No row span.
     std::int32_t checkpoint_granularity{1};
 };
 
@@ -225,6 +226,8 @@ struct CompletedPages {
 // the first point after both; keeping it inside the transaction also makes a
 // failed (and same-round retried) admission side-effect free and orders it
 // before retention reclaims the slots it publishes.
+// Restricted State checkpoints are the exception: their retained prefill
+// outputs publish on the corresponding result, independently of admission.
 struct RequestProgress {
     // Absent when no new prefix page completed since the previous admission.
     std::optional<CompletedPages> completed_pages{};
