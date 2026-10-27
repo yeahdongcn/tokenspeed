@@ -31,7 +31,7 @@ class DeviceConfig:
     device: torch.device | None
 
     def __init__(self, device: str = "cuda") -> None:
-        if device in {"cuda", "npu"}:
+        if device in {"cuda", "npu", "musa"}:
             self.device_type = device
         else:
             raise RuntimeError(f"Not supported device type: {device}")

@@ -274,12 +274,9 @@ class GemmaRMSNorm(torch.nn.Module):
             else:
                 return x
 
-        if _is_amd:
-            if x.shape[0] == 0:
-                if residual is not None:
-                    return x, residual
-                else:
-                    return x
+        if not _platform.is_nvidia:
+            # The fused Gemma norms below are FlashInfer kernels; every other
+            # vendor computes the same thing from the definition.
             orig_dtype = x.dtype
             if residual is not None:
                 x = x + residual

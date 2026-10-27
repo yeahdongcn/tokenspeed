@@ -164,6 +164,33 @@ def _unpack_group_kernel(
     )
 
 
+@triton.jit
+def _select(
+    index: tl.constexpr, value0, value1, value2, value3, value4, value5, value6, value7
+):
+    """Statically select one of eight runtime scalars by a constexpr index.
+
+    Triton 3.2 cannot subscript a tuple of values with a constexpr, so the
+    selection is an if-chain that the frontend folds away at trace time.
+    """
+    value = value0
+    if index == 1:
+        value = value1
+    elif index == 2:
+        value = value2
+    elif index == 3:
+        value = value3
+    elif index == 4:
+        value = value4
+    elif index == 5:
+        value = value5
+    elif index == 6:
+        value = value6
+    elif index == 7:
+        value = value7
+    return value
+
+
 @triton.jit(
     do_not_specialize=[
         "actual_bs",
@@ -209,19 +236,41 @@ def _unpack_packed_groups_kernel(
     """
     b = tl.program_id(0)  # grid == (padded bs, groups)
     g = tl.program_id(1)
-    offsets = (offset0, offset1, offset2, offset3, offset4, offset5, offset6, offset7)
-    blocks = (blocks0, blocks1, blocks2, blocks3, blocks4, blocks5, blocks6, blocks7)
     for i in tl.static_range(NUM_GROUPS):
         if g == i:
+            offset = _select(
+                i,
+                offset0,
+                offset1,
+                offset2,
+                offset3,
+                offset4,
+                offset5,
+                offset6,
+                offset7,
+            )
+            count = _select(
+                i,
+                blocks0,
+                blocks1,
+                blocks2,
+                blocks3,
+                blocks4,
+                blocks5,
+                blocks6,
+                blocks7,
+            )
             _unpack_row(
-                packed_ptr + offsets[i],
+                packed_ptr + offset,
                 dst_ptr + i * dst_stride_g,
                 b,
                 b < actual_bs,
-                blocks[i],
-                blocks[i],
-                RATIOS[i],
-                MAX_NUM_PAGES[i],
+                count,
+                count,
+                # A constexpr tuple is not subscriptable on every Triton, but
+                # the Python value it carries is.
+                RATIOS.value[i.value],
+                MAX_NUM_PAGES.value[i.value],
                 dst_stride_b,
                 stack_max_num_pages,
                 BLOCK_COLS,

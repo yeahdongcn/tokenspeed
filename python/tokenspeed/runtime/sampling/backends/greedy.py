@@ -114,7 +114,7 @@ def _verify_chain_greedy(
         )
         return
 
-    if candidates.is_cuda:
+    if candidates.device.type in ("cuda", "musa"):
         if (
             candidates.shape != (batch_size, num_draft_tokens)
             or target_predict.shape != candidates.shape

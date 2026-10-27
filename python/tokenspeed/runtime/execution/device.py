@@ -368,7 +368,7 @@ def _thread_device(device) -> torch.device:
     """``device`` with the index the calling thread uses: an index-less GPU
     device means the thread's current one."""
     resolved = torch.device(device)
-    if resolved.type in ("cuda", "npu") and resolved.index is None:
+    if resolved.type in ("cuda", "npu", "musa") and resolved.index is None:
         index = torch.get_device_module(resolved.type).current_device()
         resolved = torch.device(resolved.type, index)
     return resolved
@@ -411,7 +411,7 @@ class DeviceHandle:
         """Make the calling thread the forward thread: give it the rank's
         device. Called once, by that thread, before any other operation."""
         device = self._forward_device
-        if device.type in ("cuda", "npu"):
+        if device.type in ("cuda", "npu", "musa"):
             torch.get_device_module(device.type).set_device(device.index)
 
     def settle(self) -> None:

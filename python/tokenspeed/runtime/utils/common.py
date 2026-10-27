@@ -151,7 +151,7 @@ def get_available_gpu_memory(
     Get available memory for cuda:gpu_id device.
     When distributed is True, the available memory is the minimum available memory of all GPUs.
     """
-    if device in {"cuda", "npu"}:
+    if device in {"cuda", "npu", "musa"}:
         device_module = torch.get_device_module(device)
         num_gpus = device_module.device_count()
         if gpu_id >= num_gpus:
@@ -178,8 +178,20 @@ def get_available_gpu_memory(
     return free_gpu_memory / (1 << 30)
 
 
+def has_gpu() -> bool:
+    """Return whether a CUDA-like accelerator is present.
+
+    ``torch.cuda.is_available()`` is left reporting False on MUSA, so it cannot
+    be used as a GPU presence check there. Every other CUDA entry point,
+    including the ones below, reaches the MUSA runtime through torchada.
+    """
+    return torch.cuda.is_available() or (
+        hasattr(torch, "musa") and torch.musa.is_available()
+    )
+
+
 def is_pin_memory_available() -> bool:
-    return torch.cuda.is_available()
+    return has_gpu()
 
 
 class LayerFn(Protocol):
@@ -235,7 +247,7 @@ def set_random_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
+    if has_gpu():
         torch.cuda.manual_seed_all(seed)
 
 
@@ -357,9 +369,7 @@ def broadcast_pyobj(
     The `rank` here refer to the source rank on global process group (regardless
     of dist_group argument).
     """
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() and not force_cpu_device else "cpu"
-    )
+    device = torch.device("cuda" if has_gpu() and not force_cpu_device else "cpu")
 
     if rank == src:
         if len(data) == 0:
@@ -540,7 +550,7 @@ def crash_on_warnings():
 
 
 def get_device_name(device_id: int = 0) -> str:
-    if hasattr(torch, "cuda") and torch.cuda.is_available():
+    if has_gpu():
         return torch.cuda.get_device_name(device_id)
 
     return ""
@@ -548,7 +558,7 @@ def get_device_name(device_id: int = 0) -> str:
 
 @lru_cache(maxsize=8)
 def get_device(device_id: int | None = None) -> str:
-    if hasattr(torch, "cuda") and torch.cuda.is_available():
+    if has_gpu():
         if device_id is None:
             return "cuda"
         return f"cuda:{device_id}"

@@ -38,6 +38,10 @@ def is_rocm_build() -> bool:
     return getattr(torch.version, "hip", None) is not None
 
 
+def is_musa_build() -> bool:
+    return getattr(torch.version, "musa", None) is not None
+
+
 # List of packages to check versions
 PACKAGE_LIST = [
     "tokenspeed",
@@ -145,6 +149,8 @@ def get_cuda_info() -> dict[str, object]:
             cuda_info.update(_get_cuda_version_info())
 
         return cuda_info
+    elif is_musa_build():
+        return _get_musa_info()
     return {}
 
 
@@ -171,6 +177,21 @@ def _get_gpu_info() -> dict[str, str]:
             gpu_info[f"GPU {','.join(gpu_ids)} Compute Capability"] = cap
 
     return gpu_info
+
+
+def _get_musa_info() -> dict[str, object]:
+    """Get Moore Threads MUSA information."""
+    musa_info: dict[str, object] = {"MUSA available": torch.musa.is_available()}
+    if not musa_info["MUSA available"]:
+        return musa_info
+
+    musa_info["MUSA version"] = torch.version.musa
+    devices = defaultdict(list)
+    for device_index in range(torch.musa.device_count()):
+        devices[torch.musa.get_device_name(device_index)].append(str(device_index))
+    for name, device_ids in devices.items():
+        musa_info[f"MUSA {','.join(device_ids)}"] = name
+    return musa_info
 
 
 def _get_cuda_version_info() -> dict[str, str | None]:

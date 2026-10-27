@@ -18,6 +18,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# The MUSA shims must be installed before the first CUDA symbol is captured,
+# and ``tokenspeed_kernel`` is the package this runtime takes its device API
+# from, so activating through it keeps one activation point for both packages.
+from tokenspeed_kernel._accel import activate_musa_shims as _activate_musa_shims
+
+_activate_musa_shims()
+
 from tokenspeed._logging import suppress_noisy_third_party_logs
 
 _suppress_noisy_third_party_logs = suppress_noisy_third_party_logs

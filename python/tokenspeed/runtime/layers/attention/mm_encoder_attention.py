@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 _platform = current_platform()
 _is_nvidia = _platform.is_nvidia
 _is_amd = _platform.is_amd
+_is_musa = _platform.is_musa
 
 if _is_nvidia:
     from tokenspeed_kernel.ops.attention.mha.cuda import flash_attn_varlen_func
@@ -307,7 +308,7 @@ def _default_multimodal_encoder_attn_backend() -> str:
         if _platform.arch_version.major == 10:  # Blackwell SM100
             return "fa4"
         return "triton_attn"
-    if _is_amd:
+    if _is_amd or _is_musa:
         return "triton_attn"
     raise RuntimeError(
         f"No default multimodal encoder attention backend for platform {_platform}; "
