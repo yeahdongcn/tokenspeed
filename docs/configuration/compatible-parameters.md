@@ -55,6 +55,7 @@ TokenSpeed-specific behavior explicitly.
 | `--expert-parallel-size` | `--expert-parallel-size`, `--ep-size` | TokenSpeed supports the familiar name and its existing short form. |
 | `--attention-backend` | `--attention-backend` | Name is aligned; available backend values are TokenSpeed-specific. |
 | `--moe-backend` | `--moe-backend` | Name is aligned; available backend values are TokenSpeed-specific. |
+| `--mamba-ssm-cache-dtype` | `--mamba-ssm-dtype` | Accepts `float32` (default) or `bfloat16`; there is no `auto` that follows the checkpoint. |
 
 ## Recipe Translation Notes
 

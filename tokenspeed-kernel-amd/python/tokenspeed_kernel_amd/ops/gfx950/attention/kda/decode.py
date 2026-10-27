@@ -256,7 +256,7 @@ def gluon_kda_paged_decode_gfx950(
     )
     write_offsets = value_offsets[:, None] * K + key_offsets[None, :]
     cdna4.buffer_store(
-        running,
+        running.to(state_pool.dtype.element_ty),
         state_pool + write_base,
         write_offsets.to(gl.int32),
         mask=valid_write & state_mask,
@@ -451,7 +451,7 @@ def gluon_kda_fused_paged_decode_vmajor_gfx950(
         panel_out = prior_output + delta * key_query
         gl.store(
             state_pool + write_base + cur_off,
-            running,
+            running.to(state_pool.dtype.element_ty),
             mask=valid_write,
             cache_modifier=".cs",
         )
@@ -762,6 +762,7 @@ def gluon_kda_fused_replay_gfx950(
     STATE_POOL_PAGE_STRIDE: gl.constexpr,
     HAS_LOWER_BOUND: gl.constexpr,
     LOWER_BOUND: gl.constexpr,
+    STATE_BF16: gl.constexpr,
     # Follows the batch; runtime so every batch size shares one binary.
     BATCH_SIZE,
 ):
@@ -798,10 +799,16 @@ def gluon_kda_fused_replay_gfx950(
         gl.load(descriptors + descriptor_base + 7),
         gl.pointer_type(gl.float32),
     )
-    state_pool = tl.cast(
-        gl.load(descriptors + descriptor_base + 8),
-        gl.pointer_type(gl.float32),
-    )
+    if STATE_BF16:
+        state_pool = tl.cast(
+            gl.load(descriptors + descriptor_base + 8),
+            gl.pointer_type(gl.bfloat16),
+        )
+    else:
+        state_pool = tl.cast(
+            gl.load(descriptors + descriptor_base + 8),
+            gl.pointer_type(gl.float32),
+        )
     raw_g = tl.cast(
         gl.load(descriptors + descriptor_base + 9),
         gl.pointer_type(gl.bfloat16),
@@ -973,7 +980,7 @@ def gluon_kda_fused_replay_gfx950(
             write_base = safe_write_idx * STATE_POOL_PAGE_STRIDE + head_idx * D * D
             gl.store(
                 state_pool + write_base + panel_offsets,
-                running,
+                running.to(state_pool.dtype.element_ty),
                 mask=valid_write,
             )
 
@@ -1013,7 +1020,7 @@ def gluon_kda_recurrent_decode_gfx950(
         beta_logits: Packed ``[1, batch, heads]`` beta logits.
         A_log: Per-head FP32 decay parameter.
         dt_bias: Per-head, per-key FP32 decay bias.
-        state_pool: Persistent FP32 state, physical shape
+        state_pool: Persistent FP32 or BF16 state, physical shape
             ``[pages, heads, value_dim, key_dim]`` (V-major).
         read_indices: Source page per batch row.
         write_indices: Destination page per batch row.
@@ -1153,7 +1160,7 @@ def gluon_kda_fused_decode_gfx950(
             ``[batch, num_heads * head_dim]``.
         norm_weight: Gated-RMSNorm weights with shape ``[head_dim]``.
         norm_eps: Gated-RMSNorm epsilon.
-        state_pool: Mutable FP32 recurrent state, physical shape
+        state_pool: Mutable FP32 or BF16 recurrent state, physical shape
             ``[pages, num_heads, head_dim(V), head_dim(K)]`` (V-major).
         read_indices: Source state page per batch row. Negative entries mark
             graph-padding rows.
@@ -1462,9 +1469,14 @@ def launch_gluon_kda_fused_replay_gfx950(
     gate_stride: int,
     conv_width: int,
     lower_bound: float,
+    state_dtype: torch.dtype,
 ) -> None:
     """Replay every raw-g layer through the established Gluon recurrence."""
     del f_a_dim, f_a_stride
+    if state_dtype not in (torch.float32, torch.bfloat16):
+        raise TypeError(
+            f"gfx950 batched KDA replay does not support {state_dtype} state"
+        )
     if num_heads != 12 or head_dim != 128 or conv_width != 4:
         raise ValueError("gfx950 batched KDA replay requires H=12, D=128, W=4")
     if descriptors.ndim != 2 or descriptors.shape[1] != 10:
@@ -1509,6 +1521,7 @@ def launch_gluon_kda_fused_replay_gfx950(
         STATE_POOL_PAGE_STRIDE=state_stride,
         HAS_LOWER_BOUND=True,
         LOWER_BOUND=lower_bound,
+        STATE_BF16=state_dtype == torch.bfloat16,
         BATCH_SIZE=batch,
         num_warps=4,
         num_stages=2,

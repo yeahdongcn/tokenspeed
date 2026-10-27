@@ -318,6 +318,7 @@ if current_platform().is_amd:
         gate_stride: int,
         conv_width: int,
         lower_bound: float,
+        state_dtype: torch.dtype,
     ) -> None:
         """Replay all gfx950 layers from persistent BF16 raw-g descriptors."""
         _kda_fused_replay_impl(
@@ -338,6 +339,7 @@ if current_platform().is_amd:
             gate_stride=gate_stride,
             conv_width=conv_width,
             lower_bound=lower_bound,
+            state_dtype=state_dtype,
         )
 
     @register_kernel(
@@ -546,6 +548,7 @@ if current_platform().is_amd:
         gate_stride: int,
         conv_width: int,
         lower_bound: float,
+        state_dtype: torch.dtype,
     ) -> None:
         """Replay all gfx1250 layers from persistent BF16 raw-g descriptors."""
         _kda_fused_replay_gfx1250_impl(
@@ -566,4 +569,5 @@ if current_platform().is_amd:
             gate_stride=gate_stride,
             conv_width=conv_width,
             lower_bound=lower_bound,
+            state_dtype=state_dtype,
         )

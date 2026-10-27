@@ -599,6 +599,7 @@ def triton_nvidia_kda_batched_replay_commit(
     gate_stride: int,
     conv_width: int,
     lower_bound: float,
+    state_dtype: torch.dtype,
 ) -> None:
     """Replay every KDA layer described by stable device pointer tables.
 
@@ -620,6 +621,8 @@ def triton_nvidia_kda_batched_replay_commit(
         gate_stride: Token stride of the gate scratch tensor.
         conv_width: Width of the depthwise convolution kernel.
         lower_bound: Lower bound used by the KDA decay gate.
+        state_dtype: Element type of every described recurrent-state pool
+            (FP32 or BF16); the replay itself accumulates in FP32.
 
     Returns:
         None.
@@ -646,6 +649,7 @@ def triton_nvidia_kda_batched_replay_commit(
         gate_stride=gate_stride,
         conv_width=conv_width,
         lower_bound=lower_bound,
+        state_dtype=state_dtype,
     )
 
 

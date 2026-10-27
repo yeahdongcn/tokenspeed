@@ -346,6 +346,7 @@ def test_kda_fused_replay_batch_size():
             STATE_POOL_PAGE_STRIDE=196608,
             HAS_LOWER_BOUND=True,
             LOWER_BOUND=-5.0,
+            STATE_BF16=False,
             BATCH_SIZE=batch,
             num_warps=4,
             num_stages=2,

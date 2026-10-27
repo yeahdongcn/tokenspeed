@@ -28,6 +28,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA required", allow_module_level=True)
 
 from tokenspeed_kernel.ops.attention.kda import (  # noqa: E402
+    kda_batched_replay_uses_raw_gate,
     kda_replay_commit_supported,
     resolve_kda_batched_replay_commit,
 )
@@ -139,6 +140,7 @@ def _batched_static_args(x):
         gate_stride=x["gate_scratch"].stride(0),
         conv_width=x["conv_w"].shape[1],
         lower_bound=LOWER_BOUND,
+        state_dtype=x["h_pool"].dtype,
     )
 
 
@@ -345,6 +347,56 @@ def test_gluon_batched_replay_uneven_groups_match_per_layer_launches():
         )
         torch.testing.assert_close(
             actual["h_pool"], expected["h_pool"], atol=0.0, rtol=0.0
+        )
+
+
+@pytest.mark.skipif(
+    resolve_kda_batched_replay_commit() is None,
+    reason="no batched KDA replay kernel on this platform",
+)
+def test_batched_replay_bf16_state_rounds_the_fp32_replay_once():
+    """A BF16 pool replays in FP32 and stores the FP32 result rounded once.
+
+    The load dtype can change the kernel's reduction order, so states agree
+    with the FP32-pool run to within one BF16 ulp rather than bit for bit.
+    """
+    layers, n, t, pages, num_heads = 3, 2, 4, 10, 12
+    source = [
+        _window(n, t, pages=pages, seed=800 + layer, num_heads=num_heads)
+        for layer in range(layers)
+    ]
+    for layer in source:
+        if kda_batched_replay_uses_raw_gate():
+            # Descriptor slot 9 then carries the persistent BF16 raw gate.
+            layer["gate_scratch"] = layer["qkv_raw"][:, : num_heads * K].clone()
+        # Start from values a BF16 pool holds exactly.
+        layer["h_pool"] = layer["h_pool"].to(torch.bfloat16).float()
+    fp32 = [{name: value.clone() for name, value in x.items()} for x in source]
+    bf16 = [{name: value.clone() for name, value in x.items()} for x in source]
+    for layer in bf16:
+        layer["h_pool"] = layer["h_pool"].to(torch.bfloat16)
+    kernel = resolve_kda_batched_replay_commit()
+
+    for xs in (fp32, bf16):
+        kernel(
+            descriptors=_batched_descriptor(xs),
+            group_indices=torch.zeros(layers, device=DEV, dtype=torch.int32),
+            read_indices=torch.tensor([[1, 2]], device=DEV, dtype=torch.int32),
+            write_indices=torch.tensor([[5, 6]], device=DEV, dtype=torch.int32),
+            accepted_length=torch.tensor([1, t], device=DEV, dtype=torch.int32),
+            draft_token_num=t,
+            num_heads=num_heads,
+            head_dim=K,
+            f_a_dim=D_FA,
+            **_batched_static_args(xs[0]),
+        )
+
+    for wide, narrow in zip(fp32, bf16, strict=True):
+        torch.testing.assert_close(
+            narrow["conv_pool"], wide["conv_pool"], atol=0.0, rtol=0.0
+        )
+        torch.testing.assert_close(
+            narrow["h_pool"], wide["h_pool"].to(torch.bfloat16), atol=0.0, rtol=2**-7
         )
 
 

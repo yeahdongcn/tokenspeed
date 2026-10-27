@@ -2256,6 +2256,7 @@ def batched_recurrent_kda_replay_commit_kernel(
     BK: tl.constexpr,
     D_FA: tl.constexpr,
     BV: tl.constexpr,
+    STATE_BF16: tl.constexpr,
 ):
     """Replay one KDA layer/request/head per program via pointer descriptors."""
     i_l, i_n, i_hv = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -2265,7 +2266,10 @@ def batched_recurrent_kda_replay_commit_kernel(
     conv_w = tl.load(addresses + ab + 1).to(tl.pointer_type(tl.bfloat16))
     conv_pool = tl.load(addresses + ab + 2).to(tl.pointer_type(tl.bfloat16))
     beta = tl.load(addresses + ab + 5).to(tl.pointer_type(tl.bfloat16))
-    state = tl.load(addresses + ab + 8).to(tl.pointer_type(tl.float32))
+    if STATE_BF16:
+        state = tl.load(addresses + ab + 8).to(tl.pointer_type(tl.bfloat16))
+    else:
+        state = tl.load(addresses + ab + 8).to(tl.pointer_type(tl.float32))
     gate_scratch = tl.load(addresses + ab + 9).to(tl.pointer_type(tl.float32))
     group = tl.load(group_indices + i_l).to(tl.int64)
 
@@ -2386,7 +2390,12 @@ def batched_recurrent_kda_replay_commit_kernel(
                 COMPUTE_OUT=False,
             )
         po = state + write_page * STRIDE_STATE + i_hv * K * K + state_off
-        tl.store(po, b_h, mask=mask_h & write_ok, eviction_policy="evict_first")
+        tl.store(
+            po,
+            b_h.to(po.dtype.element_ty),
+            mask=mask_h & write_ok,
+            eviction_policy="evict_first",
+        )
 
 
 @triton.jit
@@ -2451,10 +2460,13 @@ def batched_recurrent_kda_replay_commit(
     gate_stride: int,
     conv_width: int,
     lower_bound: float,
+    state_dtype: torch.dtype,
 ) -> None:
     """Commit descriptor-table KDA layers using an explicit cache-group map."""
     if head_dim != 128:
         raise ValueError("batched KDA replay currently requires head_dim=128")
+    if state_dtype not in (torch.float32, torch.bfloat16):
+        raise TypeError(f"batched KDA replay does not support {state_dtype} state")
     layers = addresses.shape[0]
     if group_indices.shape != (layers,):
         raise ValueError(
@@ -2517,6 +2529,7 @@ def batched_recurrent_kda_replay_commit(
         BK=triton.next_power_of_2(head_dim),
         D_FA=f_a_dim,
         BV=32,
+        STATE_BF16=state_dtype == torch.bfloat16,
         num_warps=1,
         num_stages=2,
     )

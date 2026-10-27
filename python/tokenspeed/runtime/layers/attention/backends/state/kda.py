@@ -486,6 +486,7 @@ class KdaAttnBackend(MambaAttnBackend):
                         gate_stride=strides[5],
                         conv_width=conv_width,
                         lower_bound=next(iter(lower_bounds)),
+                        state_dtype=first_state.dtype,
                     )
 
                 self._batched_replay_launch = launch

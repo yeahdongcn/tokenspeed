@@ -29,6 +29,7 @@ For a compact compatibility table, see
 | `--dtype` | Model weight and activation dtype. `auto` follows model metadata. |
 | `--kv-cache-dtype` | KV cache dtype. Lower precision reduces KV memory and may require scaling factors. |
 | `--kv-cache-quant-method` | KV cache quantization method. |
+| `--mamba-ssm-dtype` | Stored linear-attention recurrent state dtype (GDN and KDA): `float32` (default) or `bfloat16`. Scans still accumulate in FP32; `bfloat16` halves state memory. |
 | `--quantization` | Weight quantization mode such as `fp8`, `nvfp4`, `w8a8_fp8`, or `compressed-tensors`. |
 | `--quantization-param-path` | JSON file for KV cache scaling factors, commonly needed with FP8 KV cache. |
 
