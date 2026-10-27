@@ -94,7 +94,12 @@ L3_FLUSH_REQUIRES_WEIGHT_VERSION = (
 )
 
 
-def cache_layout_signature(layout: Any, *, cache_dtype: str) -> str:
+def cache_layout_signature(
+    layout: Any,
+    *,
+    cache_dtype: str,
+    checkpoint_granularities: tuple[tuple[str, int], ...] = (),
+) -> str:
     """Return a stable fingerprint of the bytes stored in one L3 page.
 
     The signature is the packed Host CacheBlock: dtype, group packing, and
@@ -121,8 +126,11 @@ def cache_layout_signature(layout: Any, *, cache_dtype: str) -> str:
                 "fields": fields,
             }
         )
+    identity = {"cache_dtype": str(cache_dtype), "groups": groups}
+    if checkpoint_granularities:
+        identity["checkpoint_granularities"] = sorted(checkpoint_granularities)
     payload = json.dumps(
-        {"cache_dtype": str(cache_dtype), "groups": groups},
+        identity,
         sort_keys=True,
         separators=(",", ":"),
     )
