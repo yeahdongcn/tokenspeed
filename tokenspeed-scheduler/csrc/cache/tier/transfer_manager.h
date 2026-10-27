@@ -53,7 +53,8 @@ public:
     // leaves is stored ahead of the queued candidates, and its Host copies
     // -- already cached, carried by a store in flight, or stored now -- are
     // dated by the batch's epochs (CacheCoordinator::TakeStoreEpochs); no
-    // other Host entry is refreshed.
+    // other Host entry is refreshed. Its copies are placed newest first, each
+    // only in free capacity or in place of an older entry.
     std::optional<WriteBackOperation> StartPendingStores(
         StoreSourceGuard guard, const std::optional<CacheCoordinator::FinalPublication>& publication);
     LoadBackOperation StartPrefixLoad(std::vector<BlockTransfer> block_transfers);

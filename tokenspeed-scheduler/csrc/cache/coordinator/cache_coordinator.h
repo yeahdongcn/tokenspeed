@@ -396,9 +396,15 @@ public:
     // the same rows on every rank. Free capacity first, then global LRU over
     // compatible children and fully evictable parents of any group. A parent
     // is ranked by its newest child; equal epochs prefer one child. A
-    // shortfall leaves an empty reference.
+    // shortfall leaves an empty reference. access_epochs, unless empty, are
+    // the epochs the blocks' entries will be published at: the blocks are
+    // placed newest first, and each evicts only entries older than its own
+    // (a parent: when its newest child is), so a copy never displaces a newer
+    // entry; a block that finds no such entry and no free capacity is a
+    // shortfall. Empty: any entry may be evicted.
     HostAllocationBatch AcquireHostBlocks(std::span<const std::uint32_t> group_ids,
-                                          std::span<const std::int32_t> buckets);
+                                          std::span<const std::int32_t> buckets,
+                                          std::span<const std::uint64_t> access_epochs);
     CacheBlockRef AcquireHostBlock(std::uint32_t group_id, std::int32_t bucket);
     CacheBlockRef FindHostCachedBlock(const CacheKey& key) const;
     // Collection/pinning follows host-tier presence, so the slide credit flips count_uncached on this.

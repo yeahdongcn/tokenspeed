@@ -881,7 +881,13 @@ Its responsibilities:
   publishes it no older; and no ACK dates back an entry the index already
   holds (an L3 read that landed first). The batch dates what else it stores
   `base`, older than its boundary, except that a final publication's copy of
-  an entry outside its boundary keeps that Device entry's date. Pinned
+  an entry outside its boundary keeps that Device entry's date. A final
+  publication's batch therefore places its copies newest first, and each
+  evicts only entries older than its own date (a parent: when its newest
+  child is), so it never trades an entry for an older copy; a copy that finds
+  neither free capacity nor such an entry is not stored. A live batch dates
+  every copy `base`, newer than any entry, and a retraction's image must
+  place every slot, so both may evict any unpinned entry. Pinned
   entries, partially pinned foreign parents,
   and blocks allocated earlier in the same batch remain protected. Parent
   candidates are snapshots; selection skips parents that are now empty or
@@ -1405,7 +1411,7 @@ Non-causal DSA block drafts remain unsupported (`AttnConfig` rejects
 pool and the snapshot pool are registered with the same `shard_count` as the
 Device pool, and every transfer the scheduler emits — L2 store, L2 prefix
 load, both legs of a retraction image, the restore — acquires its destination
-in its source's bucket (`AcquireHostBlocks(group_ids, buckets)`,
+in its source's bucket (`AcquireHostBlocks(group_ids, buckets, ...)`,
 `AcquireBlocksInBuckets`, `TakeImage`, `Restore`), so `(src - 1) % D ==
 (dst - 1) % D` for every row; `TierTransferManager` asserts it when it builds
 a batch. A Host block's residue is therefore its owner exactly as a Device

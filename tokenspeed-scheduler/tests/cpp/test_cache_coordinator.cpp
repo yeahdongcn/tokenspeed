@@ -2844,7 +2844,7 @@ TEST(CacheCoordinatorHostReplacement, GlobalLruBatchSkipsReboundEntriesAndProtec
     const std::array<std::uint32_t, 3> groups{1, 0, 1};
     const std::array<std::int32_t, 3> buckets{0, 0, 0};
 
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_TRUE(batch.blocks[0]);
     EXPECT_EQ(batch.blocks[0]->Location().lcm_block_id, older_parent);
@@ -2895,7 +2895,7 @@ TEST(CacheCoordinatorHostReplacement, GlobalLruMixesChildAndParentVictimsAcrossB
     // buckets. Later requests reuse those holes and skip rebound candidates.
     const std::array<std::uint32_t, 5> groups{0, 1, 1, 0, 0};
     const std::array<std::int32_t, 5> buckets{0, 1, 0, 1, 0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_TRUE(std::ranges::all_of(batch.blocks, [](const CacheBlockRef& ref) { return static_cast<bool>(ref); }));
     EXPECT_EQ(batch.blocks[0]->Location(), cold_child);
@@ -3001,7 +3001,7 @@ TEST(CacheCoordinatorHostReplacement, SingleGroupBatchUsesChildrenWithoutParentC
 
     const std::array<std::uint32_t, 3> groups{0, 0, 0};
     const std::array<std::int32_t, 3> buckets{0, 0, 0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_EQ(batch.blocks.size(), groups.size());
     EXPECT_TRUE(std::ranges::all_of(batch.blocks, [](const CacheBlockRef& ref) { return static_cast<bool>(ref); }));
@@ -3029,7 +3029,7 @@ TEST(CacheCoordinatorHostReplacement, BatchPreservesEmptyRefForPinnedShortfall) 
 
     const std::array<std::uint32_t, 2> groups{0, 0};
     const std::array<std::int32_t, 2> buckets{0, 0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_EQ(batch.blocks.size(), groups.size());
     EXPECT_TRUE(batch.blocks[0]);
@@ -3053,7 +3053,7 @@ TEST(CacheCoordinatorHostReplacement, BatchGivesScarceFreeCapacityToFirstCandida
                                                    /*stream_device_cache_to_host=*/true);
     const std::array<std::uint32_t, 2> groups{1, 0};
     const std::array<std::int32_t, 2> buckets{0, 0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_EQ(batch.blocks.size(), groups.size());
     ASSERT_TRUE(batch.blocks[0]);
@@ -3075,7 +3075,7 @@ TEST(CacheCoordinatorHostReplacement, BatchGivesInterleavedGroupsFreeCapacityInC
                                                    /*stream_device_cache_to_host=*/true);
     const std::array<std::uint32_t, 3> groups{0, 1, 0};
     const std::array<std::int32_t, 3> buckets{0, 0, 0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_EQ(batch.blocks.size(), groups.size());
     ASSERT_TRUE(batch.blocks[0]);
@@ -3104,7 +3104,7 @@ TEST(CacheCoordinatorHostReplacement, BatchRebindsParentsOnceAcrossMixedGroups) 
 
     const std::array<std::uint32_t, 3> groups{1, 1, 0};
     const std::array<std::int32_t, 3> buckets{0, 0, 0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_EQ(batch.blocks.size(), groups.size());
     ASSERT_TRUE(batch.blocks[0]);
@@ -3138,7 +3138,7 @@ TEST(CacheCoordinatorHostReplacement, BatchCrossGroupRebindingDoesNotRescanPlace
 
     const std::array<std::uint32_t, 3> groups{1, 1, 1};
     const std::array<std::int32_t, 3> buckets{0, 0, 0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     EXPECT_TRUE(std::ranges::all_of(batch.blocks, [](const CacheBlockRef& ref) { return static_cast<bool>(ref); }));
     EXPECT_EQ(batch.stats.parent_candidates, 2u);
@@ -3160,7 +3160,7 @@ TEST(CacheCoordinatorHostReplacement, BatchCrossGroupRebindingChoosesLowestCache
 
     const std::array<std::uint32_t, 1> groups{2};
     const std::array<std::int32_t, 1> buckets{0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_TRUE(batch.blocks[0]);
     EXPECT_EQ(batch.blocks[0]->Location().lcm_block_id, older_parent);
@@ -3186,7 +3186,7 @@ TEST(CacheCoordinatorHostReplacement, BatchDoesNotRebindPinnedParent) {
 
     const std::array<std::uint32_t, 1> groups{1};
     const std::array<std::int32_t, 1> buckets{0};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
 
     ASSERT_EQ(batch.blocks.size(), groups.size());
     EXPECT_FALSE(batch.blocks[0]);
@@ -4250,7 +4250,7 @@ TEST(RetractionImageTest, HostAllocationFollowsTheSourceBucket) {
 
     const std::array<std::uint32_t, 2> groups{0, 0};
     const std::array<std::int32_t, 2> buckets{1, 1};
-    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets);
+    CacheCoordinator::HostAllocationBatch batch = coordinator.AcquireHostBlocks(groups, buckets, /*access_epochs=*/{});
     ASSERT_TRUE(batch.blocks[0]);
     ASSERT_TRUE(batch.blocks[1]);
     EXPECT_EQ(allocator.BucketOf(batch.blocks[0]->Location()), 1);
